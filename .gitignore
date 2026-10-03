@@ -1,0 +1,48 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Build Outputs & Bundles
+dist/
+dist_release/
+build/
+*.exe
+!src-tauri/bin/.gitkeep
+
+# Rust
+src-tauri/target/
+src-tauri/target-test/
+src-tauri/bin/yt-dlp.exe
+**/*.rs.bk
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+sidecar/.env
+
+# Local Environment & Secrets
+.env
+.env.local
+.env.*.local
+
+# IDE & Editor Settings
+.vscode/
+.idea/
+.claude/
+*.swp
+*.swo
+
+# OS Generated
+.DS_Store
+Thumbs.db
+ehthumbs.db
+
+# Scratch, Testing & Local Artifacts
+scratch_*
+scratch_dl_probe/
+lyrics.zip
+spotify_playlist.html
+*.log
