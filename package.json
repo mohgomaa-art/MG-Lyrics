@@ -1,7 +1,7 @@
 {
   "name": "lyrics-temp",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "scripts": {
     "dev": "node scripts/kill-port.cjs 1420 && vite",
