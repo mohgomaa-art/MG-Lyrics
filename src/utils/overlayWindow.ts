@@ -227,6 +227,14 @@ export async function openOverlayWindow(): Promise<WebviewWindow | null> {
     }
   }
   saveOverlayRect(rect.x, rect.y, rect.scale);
+  // The overlay shows itself after its first paint, but that needs its own ACL
+  // permission. Do not depend on it: the main window (which is allowed to) shows
+  // it after a short delay if it is still hidden, so it can never stay invisible.
+  setTimeout(() => {
+    win.isVisible().then((v) => { if (!v) return win.show(); }).catch(() => {
+      win.show().catch((e) => console.warn("[overlay] show failed:", e));
+    });
+  }, 1200);
   return win;
 }
 

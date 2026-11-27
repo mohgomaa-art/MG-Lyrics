@@ -117,6 +117,100 @@ input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.3); }
 .lyric-word { transition: color .25s var(--ease), opacity .25s var(--ease), transform .25s var(--ease), font-size .2s var(--ease); }
 .theme-classic-active, .theme-inverse-active, .theme-serif-active, .theme-mono-active { transform: translateY(-1px); }
 
+/* Colour themes */
+/* 1. Nebula Active Pulse */
+@keyframes nebula-pulse {
+  0%, 100% { transform: translateY(-2px) scale(1.05); }
+  50% { transform: translateY(-3px) scale(1.09); filter: brightness(1.1); }
+}
+.theme-nebula-active {
+  animation: nebula-pulse 1.8s ease-in-out infinite;
+}
+
+/* 2. Cyberpunk Glitch Scale */
+@keyframes cyberpunk-pulse {
+  0%, 100% { transform: translateY(-1px) scale(1.04) skewX(0deg); }
+  33% { transform: translateY(-2px) scale(1.06) skewX(-2deg); }
+  66% { transform: translateY(-1px) scale(1.05) skewX(2deg); }
+}
+.theme-cyberpunk-active {
+  animation: cyberpunk-pulse 0.9s steps(3) infinite;
+}
+
+/* 3. Terminal Amber Underline Blink */
+@keyframes terminal-blink {
+  0%, 100% { border-bottom: 2px solid #FFB000; }
+  50% { border-bottom: 2px solid transparent; }
+}
+.theme-terminal-active {
+  animation: terminal-blink 1s step-end infinite;
+  padding-bottom: 1px;
+}
+
+/* 4. Elegant Serif Gentle Floating */
+@keyframes elegant-float {
+  0%, 100% { transform: translateY(0px) scale(1.02); font-style: italic; }
+  50% { transform: translateY(-2px) scale(1.04); font-style: italic; }
+}
+.theme-elegant-active {
+  animation: elegant-float 2.5s ease-in-out infinite;
+}
+
+/* 5. Minimalist Clean Scale */
+@keyframes minimal-scale {
+  0%, 100% { transform: scale(1.03); }
+  50% { transform: scale(1.06); }
+}
+.theme-minimal-active {
+  animation: minimal-scale 2s ease-in-out infinite;
+}
+
+/* 6. Emerald Radiant Pulse */
+@keyframes emerald-glow {
+  0%, 100% { transform: translateY(-2px) scale(1.04); filter: drop-shadow(0 0 10px rgba(16,185,129,0.7)); }
+  50% { transform: translateY(-3px) scale(1.08); filter: drop-shadow(0 0 18px rgba(16,185,129,0.95)); }
+}
+.theme-emerald-active {
+  animation: emerald-glow 2s ease-in-out infinite;
+}
+
+/* 7. Sunset Horizon Warm Rise */
+@keyframes sunset-drift {
+  0%, 100% { transform: translateY(-1px) scale(1.03); filter: brightness(1); }
+  50% { transform: translateY(-3px) scale(1.07); filter: brightness(1.2); }
+}
+.theme-sunset-active {
+  animation: sunset-drift 2.2s ease-in-out infinite;
+}
+
+/* 8. Synthwave 80s Shimmer */
+@keyframes synthwave-shimmer {
+  0%, 100% { transform: translateY(-2px) scale(1.05) skewX(0deg); text-shadow: 0 0 15px rgba(255,20,147,0.9), 0 0 30px rgba(0,240,255,0.4); }
+  50% { transform: translateY(-3px) scale(1.08) skewX(-1deg); text-shadow: 0 0 25px rgba(255,20,147,1), 0 0 40px rgba(0,240,255,0.7); }
+}
+.theme-synthwave-active {
+  animation: synthwave-shimmer 1.5s ease-in-out infinite;
+}
+
+/* 9. Nordic Arctic Glacier Crystal */
+@keyframes nordic-pulse {
+  0%, 100% { transform: translateY(-1px) scale(1.04); filter: drop-shadow(0 0 8px rgba(56,189,248,0.7)); }
+  50% { transform: translateY(-2px) scale(1.07); filter: drop-shadow(0 0 16px rgba(56,189,248,1)); }
+}
+.theme-nordic-active {
+  animation: nordic-pulse 2s ease-in-out infinite;
+}
+
+/* 10. Tokyo Night Electric Drift */
+@keyframes tokyo-drift {
+  0%, 100% { transform: translateY(-1px) scale(1.04); filter: drop-shadow(0 0 10px rgba(167,139,250,0.75)); }
+  50% { transform: translateY(-3px) scale(1.08); filter: drop-shadow(0 0 20px rgba(236,72,153,0.8)); }
+}
+.theme-tokyo-active {
+  animation: tokyo-drift 1.8s ease-in-out infinite;
+}
+
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }

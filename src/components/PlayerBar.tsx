@@ -298,6 +298,16 @@ export default function PlayerBar({
               <option value="inverse" className="bg-[var(--bg)] text-[var(--text)]">Inverse Black</option>
               <option value="serif" className="bg-[var(--bg)] text-[var(--text)]">Serif</option>
               <option value="mono" className="bg-[var(--bg)] text-[var(--text)]">Mono</option>
+              <option value="nebula" className="bg-[var(--bg)] text-[var(--text)]">Nebula Purple</option>
+              <option value="cyberpunk" className="bg-[var(--bg)] text-[var(--text)]">Cyberpunk Cyan</option>
+              <option value="terminal" className="bg-[var(--bg)] text-[var(--text)]">Amber Terminal</option>
+              <option value="elegant" className="bg-[var(--bg)] text-[var(--text)]">Elegant Serif</option>
+              <option value="minimal" className="bg-[var(--bg)] text-[var(--text)]">Minimalist White</option>
+              <option value="emerald" className="bg-[var(--bg)] text-[var(--text)]">Emerald Forest</option>
+              <option value="sunset" className="bg-[var(--bg)] text-[var(--text)]">Sunset Horizon</option>
+              <option value="synthwave" className="bg-[var(--bg)] text-[var(--text)]">Synthwave 80s</option>
+              <option value="nordic" className="bg-[var(--bg)] text-[var(--text)]">Nordic Ice</option>
+              <option value="tokyo" className="bg-[var(--bg)] text-[var(--text)]">Tokyo Electric</option>
             </select>
 
             {/* Lock/Unlock Toggle Button */}

@@ -149,7 +149,7 @@ export default function App() {
   const prevVolumeRef   = useRef(0.8);
   const allTracksRef    = useRef(allTracks);
   const lyricsPinnedRef = useRef(true);
-  const lyricsThemeRef  = useRef("nebula");
+  const lyricsThemeRef  = useRef("classic");
   const errorTokenRef   = useRef(0);
 
   // In-memory stream cache to avoid re-resolving streams repeatedly (TTL: 2 hours)
@@ -893,6 +893,7 @@ export default function App() {
     const win = await openOverlayWindow();
     if (!win) {
       console.warn("[overlay] lyrics window could not be created");
+      alert("The lyrics overlay window could not be created. Close it from the taskbar if one is open and try again.");
       return;
     }
     // The window can be closed from the OS (Alt+F4, its own X, app shutdown).
@@ -1084,7 +1085,7 @@ export default function App() {
           case "T": {
             if (e.ctrlKey || e.metaKey || e.altKey) break;
             setLyricsTheme(prev => {
-              const themes = ["classic", "inverse", "serif", "mono"];
+              const themes = ["classic", "inverse", "serif", "mono", "nebula", "cyberpunk", "terminal", "elegant", "minimal", "emerald", "sunset", "synthwave", "nordic", "tokyo"];
               const nextIdx = (themes.indexOf(prev) + 1) % themes.length;
               return themes[nextIdx];
             });
