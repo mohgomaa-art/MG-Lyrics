@@ -20,7 +20,7 @@ function EqBarsSmall() {
 import type { MGProvider } from "../types/track";
 
 function SourceBadge({ source }: { source: MGProvider }) {
-  const color = source === "spotify" ? "#1ED760" : source === "youtube" ? "#FF4444" : source === "soundcloud" ? "#FF5500" : "#8A2BE2";
+  const color = source === "spotify" ? "#1ED760" : source === "youtube" ? "#FF4444" : source === "soundcloud" ? "#FF5500" : "var(--accent)";
   return (
     <span
       className="inline-block w-1.5 h-1.5 rounded-full flex-shrink-0"

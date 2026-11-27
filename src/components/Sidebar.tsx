@@ -1,4 +1,6 @@
+import { memo, useState } from "react";
 import type { Playlist } from "../App";
+import { applyTheme, getTheme, type ThemeMode } from "../utils/theme";
 
 interface SidebarProps {
   activeView: string;
@@ -6,7 +8,13 @@ interface SidebarProps {
   playlists: Playlist[];
 }
 
-export default function Sidebar({ activeView, onNavigate, playlists }: SidebarProps) {
+function Sidebar({ activeView, onNavigate, playlists }: SidebarProps) {
+  const [theme, setThemeState] = useState<ThemeMode>(getTheme());
+  const toggleTheme = () => {
+    const next: ThemeMode = theme === "dark" ? "light" : "dark";
+    applyTheme(next, true);
+    setThemeState(next);
+  };
   const navItems = [
     {
       id: "home",
@@ -89,7 +97,7 @@ export default function Sidebar({ activeView, onNavigate, playlists }: SidebarPr
       id: "provider-local",
       label: "Local Files",
       tag: "Offline",
-      color: "#8A2BE2",
+      color: "var(--accent)",
       icon: (
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
           <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
@@ -107,9 +115,9 @@ export default function Sidebar({ activeView, onNavigate, playlists }: SidebarPr
         height: "100%",
         display: "flex",
         flexDirection: "column",
-        background: "rgba(10, 10, 16, 0.6)",
-        backdropFilter: "blur(24px)",
-        borderRight: "1px solid rgba(255,255,255,0.06)",
+        background: "color-mix(in srgb, var(--surface) 90%, transparent)",
+        
+        borderRight: "1px solid color-mix(in srgb, var(--text) 6%, transparent)",
         padding: "20px 12px",
         gap: "6px",
         overflowY: "hidden",
@@ -124,11 +132,11 @@ export default function Sidebar({ activeView, onNavigate, playlists }: SidebarPr
             width: 34,
             height: 34,
             borderRadius: 10,
-            background: "linear-gradient(135deg, #8A2BE2, #EC4899)",
+            background: "var(--surface-2)",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
-            boxShadow: "0 0 18px rgba(138,43,226,0.4)",
+            boxShadow: "0 0 18px color-mix(in srgb, var(--accent) 40%, transparent)",
             flexShrink: 0,
           }}
         >
@@ -144,10 +152,10 @@ export default function Sidebar({ activeView, onNavigate, playlists }: SidebarPr
           </svg>
         </div>
         <div>
-          <div style={{ fontWeight: 900, fontSize: 15, color: "#fff", letterSpacing: "-0.02em", lineHeight: 1.1 }}>
+          <div style={{ fontWeight: 900, fontSize: 15, color: "var(--text)", letterSpacing: "-0.02em", lineHeight: 1.1 }}>
             MG LYRICS
           </div>
-          <div style={{ fontSize: 9, fontWeight: 800, letterSpacing: "0.12em", color: "#8A2BE2", textTransform: "uppercase" }}>
+          <div style={{ fontSize: 9, fontWeight: 800, letterSpacing: "0.12em", color: "var(--accent)", textTransform: "uppercase" }}>
             Premium Player
           </div>
         </div>
@@ -155,7 +163,7 @@ export default function Sidebar({ activeView, onNavigate, playlists }: SidebarPr
 
       {/* Nav */}
       <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-        <div style={{ fontSize: 9, fontWeight: 800, color: "#5A5D70", letterSpacing: "0.14em", textTransform: "uppercase", padding: "0 10px 6px" }}>
+        <div style={{ fontSize: 9, fontWeight: 800, color: "var(--text-3)", letterSpacing: "0.14em", textTransform: "uppercase", padding: "0 10px 6px" }}>
           Menu
         </div>
         {navItems.map((item) => {
@@ -170,9 +178,9 @@ export default function Sidebar({ activeView, onNavigate, playlists }: SidebarPr
                 gap: 10,
                 padding: "10px 12px",
                 borderRadius: 12,
-                border: isActive ? "1px solid rgba(138,43,226,0.3)" : "1px solid transparent",
-                background: isActive ? "rgba(138,43,226,0.12)" : "transparent",
-                color: isActive ? "#fff" : "#9FA2B4",
+                border: isActive ? "1px solid color-mix(in srgb, var(--accent) 30%, transparent)" : "1px solid transparent",
+                background: isActive ? "color-mix(in srgb, var(--accent) 12%, transparent)" : "transparent",
+                color: isActive ? "var(--text)" : "var(--text-2)",
                 fontSize: 13,
                 fontWeight: isActive ? 700 : 500,
                 cursor: "pointer",
@@ -181,7 +189,7 @@ export default function Sidebar({ activeView, onNavigate, playlists }: SidebarPr
                 width: "100%",
               }}
             >
-              <span style={{ color: isActive ? "#8A2BE2" : "inherit", flexShrink: 0 }}>{item.icon}</span>
+              <span style={{ color: isActive ? "var(--accent)" : "inherit", flexShrink: 0 }}>{item.icon}</span>
               {item.label}
             </button>
           );
@@ -189,11 +197,11 @@ export default function Sidebar({ activeView, onNavigate, playlists }: SidebarPr
       </div>
 
       {/* Divider */}
-      <div style={{ height: 1, background: "rgba(255,255,255,0.05)", margin: "6px 0" }} />
+      <div style={{ height: 1, background: "color-mix(in srgb, var(--text) 5%, transparent)", margin: "6px 0" }} />
 
       {/* Providers */}
       <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-        <div style={{ fontSize: 9, fontWeight: 800, color: "#5A5D70", letterSpacing: "0.14em", textTransform: "uppercase", padding: "0 10px 6px" }}>
+        <div style={{ fontSize: 9, fontWeight: 800, color: "var(--text-3)", letterSpacing: "0.14em", textTransform: "uppercase", padding: "0 10px 6px" }}>
           Providers
         </div>
         {providerItems.map((item) => {
@@ -210,7 +218,7 @@ export default function Sidebar({ activeView, onNavigate, playlists }: SidebarPr
                 borderRadius: 11,
                 border: isActive ? `1px solid ${item.color}50` : "1px solid transparent",
                 background: isActive ? `${item.color}15` : "transparent",
-                color: isActive ? "#fff" : "#9FA2B4",
+                color: isActive ? "var(--text)" : "var(--text-2)",
                 fontSize: 12,
                 fontWeight: isActive ? 700 : 500,
                 cursor: "pointer",
@@ -241,15 +249,15 @@ export default function Sidebar({ activeView, onNavigate, playlists }: SidebarPr
       </div>
 
       {/* Divider */}
-      <div style={{ height: 1, background: "rgba(255,255,255,0.05)", margin: "6px 0" }} />
+      <div style={{ height: 1, background: "color-mix(in srgb, var(--text) 5%, transparent)", margin: "6px 0" }} />
 
       {/* Playlists */}
       <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 10px 8px" }}>
-          <span style={{ fontSize: 9, fontWeight: 800, color: "#5A5D70", letterSpacing: "0.14em", textTransform: "uppercase" }}>
+          <span style={{ fontSize: 9, fontWeight: 800, color: "var(--text-3)", letterSpacing: "0.14em", textTransform: "uppercase" }}>
             Playlists
           </span>
-          <span style={{ fontSize: 9, fontWeight: 700, color: "#5A5D70", background: "rgba(255,255,255,0.05)", padding: "2px 6px", borderRadius: 99 }}>
+          <span style={{ fontSize: 9, fontWeight: 700, color: "var(--text-3)", background: "color-mix(in srgb, var(--text) 5%, transparent)", padding: "2px 6px", borderRadius: 99 }}>
             {playlists.length}
           </span>
         </div>
@@ -257,7 +265,7 @@ export default function Sidebar({ activeView, onNavigate, playlists }: SidebarPr
         <div style={{ display: "flex", flexDirection: "column", gap: 2, overflowY: "auto", flex: 1 }}>
           {playlists.map((pl) => {
             const isActive = activeView === pl.id;
-            const dotColor = pl.source === "spotify" ? "#1DB954" : pl.source === "soundcloud" ? "#FF5500" : pl.source === "youtube" ? "#FF0000" : "#8A2BE2";
+            const dotColor = pl.source === "spotify" ? "#1DB954" : pl.source === "soundcloud" ? "#FF5500" : pl.source === "youtube" ? "#FF0000" : "var(--accent)";
             return (
               <button
                 key={pl.id}
@@ -268,9 +276,9 @@ export default function Sidebar({ activeView, onNavigate, playlists }: SidebarPr
                   gap: 9,
                   padding: "9px 12px",
                   borderRadius: 11,
-                  border: isActive ? "1px solid rgba(255,255,255,0.1)" : "1px solid transparent",
-                  background: isActive ? "rgba(255,255,255,0.07)" : "transparent",
-                  color: isActive ? "#fff" : "#9FA2B4",
+                  border: isActive ? "1px solid color-mix(in srgb, var(--text) 10%, transparent)" : "1px solid transparent",
+                  background: isActive ? "color-mix(in srgb, var(--text) 7%, transparent)" : "transparent",
+                  color: isActive ? "var(--text)" : "var(--text-2)",
                   fontSize: 12,
                   fontWeight: isActive ? 700 : 500,
                   cursor: "pointer",
@@ -298,28 +306,41 @@ export default function Sidebar({ activeView, onNavigate, playlists }: SidebarPr
       </div>
 
       {/* Footer status */}
-      <div style={{ paddingTop: 12, borderTop: "1px solid rgba(255,255,255,0.05)", marginTop: "auto" }}>
+      <div style={{ paddingTop: 12, borderTop: "1px solid color-mix(in srgb, var(--text) 5%, transparent)", marginTop: "auto" }}>
         <div style={{
           display: "flex",
           alignItems: "center",
           gap: 8,
           padding: "8px 10px",
           borderRadius: 10,
-          background: "rgba(255,255,255,0.03)",
+          background: "color-mix(in srgb, var(--text) 3%, transparent)",
         }}>
           <div style={{
             width: 7,
             height: 7,
             borderRadius: "50%",
             background: "#1DB954",
-            boxShadow: "0 0 8px #1DB954",
             animation: "pulse-glow 2s infinite",
           }} />
-          <span style={{ fontSize: 9, fontWeight: 700, color: "#5A5D70", letterSpacing: "0.1em", textTransform: "uppercase" }}>
+          <span style={{ fontSize: 9, fontWeight: 700, color: "var(--text-3)", letterSpacing: "0.1em", textTransform: "uppercase", flex: 1 }}>
             Engine Online
           </span>
+          <button
+            onClick={toggleTheme}
+            title={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+            aria-label="Toggle theme"
+            style={{ background: "transparent", border: "1px solid var(--border)", color: "var(--text-2)", borderRadius: 8, width: 26, height: 26, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center" }}
+          >
+            {theme === "dark" ? (
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+            ) : (
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+            )}
+          </button>
         </div>
       </div>
     </aside>
   );
 }
+
+export default memo(Sidebar);

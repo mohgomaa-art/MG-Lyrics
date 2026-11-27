@@ -4,6 +4,8 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
 
+mod config;
+
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct LocalTrack {
@@ -62,11 +64,11 @@ fn find_binary_path(name: &str) -> Option<String> {
 
     // 2. Check LocalAppData directory
     if let Ok(local_appdata) = std::env::var("LOCALAPPDATA") {
-        let app_bin = PathBuf::from(&local_appdata).join("MG Lyrics Player").join("bin").join(&exe_name);
+        let app_bin = PathBuf::from(&local_appdata).join(config::APP_DIR_NAME).join("bin").join(&exe_name);
         if app_bin.exists() && is_command_valid(app_bin.to_str().unwrap_or(""), &["--version"]) {
             return Some(app_bin.to_string_lossy().to_string());
         }
-        let app_dir = PathBuf::from(&local_appdata).join("MG Lyrics Player").join(&exe_name);
+        let app_dir = PathBuf::from(&local_appdata).join(config::APP_DIR_NAME).join(&exe_name);
         if app_dir.exists() && is_command_valid(app_dir.to_str().unwrap_or(""), &["--version"]) {
             return Some(app_dir.to_string_lossy().to_string());
         }
@@ -76,21 +78,7 @@ fn find_binary_path(name: &str) -> Option<String> {
         }
     }
 
-    // 3. Check current working directory
-    if let Ok(cur_dir) = std::env::current_dir() {
-        let direct = cur_dir.join(&exe_name);
-        if direct.exists() && is_command_valid(direct.to_str().unwrap_or(""), &["--version"]) {
-            return Some(direct.to_string_lossy().to_string());
-        }
-        let in_bin = cur_dir.join("bin").join(&exe_name);
-        if in_bin.exists() && is_command_valid(in_bin.to_str().unwrap_or(""), &["--version"]) {
-            return Some(in_bin.to_string_lossy().to_string());
-        }
-        let in_src_tauri_bin = cur_dir.join("src-tauri").join("bin").join(&exe_name);
-        if in_src_tauri_bin.exists() && is_command_valid(in_src_tauri_bin.to_str().unwrap_or(""), &["--version"]) {
-            return Some(in_src_tauri_bin.to_string_lossy().to_string());
-        }
-    }
+    // (cwd lookup removed: a malicious yt-dlp.exe dropped in the working directory would be executed)
 
     // 4. Check system PATH
     if is_command_valid(name, &["--version"]) {
@@ -109,7 +97,22 @@ pub struct StructuredCommand {
     pub prefix_args: Vec<String>,
 }
 
+static YTDLP_CMD_CACHE: std::sync::OnceLock<StructuredCommand> = std::sync::OnceLock::new();
+
+/// Resolve yt-dlp once per process. Discovery spawns several child processes
+/// (`node --version`, `yt-dlp --version`, python probes), so doing it on every
+/// preview/search/playlist call added hundreds of ms each time. Only successful
+/// lookups are cached, so installing yt-dlp while the app runs still works.
 fn get_ytdlp_cmd() -> Result<StructuredCommand, String> {
+    if let Some(sc) = YTDLP_CMD_CACHE.get() {
+        return Ok(sc.clone());
+    }
+    let sc = resolve_ytdlp_cmd()?;
+    let _ = YTDLP_CMD_CACHE.set(sc.clone());
+    Ok(sc)
+}
+
+fn resolve_ytdlp_cmd() -> Result<StructuredCommand, String> {
     let mut js_args = vec![];
     if let Some(node_path) = find_binary_path("node") {
         js_args.push("--js-runtimes".to_string());
@@ -142,26 +145,83 @@ fn get_ytdlp_cmd() -> Result<StructuredCommand, String> {
 }
 
 async fn run_ytdlp_args(sc: &StructuredCommand, args: Vec<String>, timeout_secs: u64) -> Result<std::process::Output, String> {
-    let sc_clone = sc.clone();
-    let res = tokio::time::timeout(
-        std::time::Duration::from_secs(timeout_secs),
-        tokio::task::spawn_blocking(move || {
-            let mut cmd = Command::new(&sc_clone.program);
-            cmd.args(&sc_clone.prefix_args);
-            cmd.args(&args);
-            #[cfg(windows)]
-            {
-                use std::os::windows::process::CommandExt;
-                cmd.creation_flags(0x08000000);
-            }
-            cmd.output()
-        })
-    ).await
-    .map_err(|_| format!("yt-dlp command timed out after {timeout_secs}s"))?
-    .map_err(|e| format!("Task execution error: {e}"))?
-    .map_err(|e| format!("Failed to spawn yt-dlp: {e}"))?;
+    // tokio::process with kill_on_drop: when the timeout fires the future is dropped and the
+    // yt-dlp child is killed (the old spawn_blocking version leaked the process on timeout).
+    let mut cmd = tokio::process::Command::new(&sc.program);
+    cmd.args(&sc.prefix_args);
+    cmd.args(&args);
+    cmd.stdin(std::process::Stdio::null());
+    cmd.kill_on_drop(true);
+    #[cfg(windows)]
+    {
+        cmd.creation_flags(0x08000000);
+    }
+    tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), cmd.output())
+        .await
+        .map_err(|_| format!("yt-dlp command timed out after {timeout_secs}s"))?
+        .map_err(|e| format!("Failed to spawn yt-dlp: {e}"))
+}
 
-    Ok(res)
+/// Detect YouTube's anti-bot / rate-limit wall in yt-dlp stderr.
+fn is_youtube_bot_wall(stderr: &str) -> bool {
+    let s = stderr.to_lowercase();
+    s.contains("sign in to confirm")
+        || s.contains("not a bot")
+        || s.contains("http error 429")
+        || s.contains("too many requests")
+}
+
+const BOT_WALL_HINT: &str = "YouTube blocked the request with a bot check. Fix: update yt-dlp (yt-dlp -U) or export browser cookies to a cookies.txt file and set the MG_LYRICS_YT_COOKIES environment variable to its path.";
+
+/// Optional cookies file for YouTube extraction.
+/// Set MG_LYRICS_YT_COOKIES to the path of a Netscape-format cookies.txt.
+fn ytdlp_cookie_args() -> Vec<String> {
+    if let Ok(p) = std::env::var("MG_LYRICS_YT_COOKIES") {
+        let p = p.trim().to_string();
+        if !p.is_empty() && PathBuf::from(&p).exists() {
+            return vec!["--cookies".to_string(), p];
+        }
+    }
+    Vec::new()
+}
+
+/// Parse the first JSON object line from yt-dlp stdout.
+/// On failure, produce an actionable error instead of a bare parse failure.
+fn parse_ytdlp_json_output(output: &std::process::Output, context: &str) -> Result<serde_json::Value, String> {
+    let stdout_str = String::from_utf8_lossy(&output.stdout);
+    if let Some(v) = stdout_str
+        .lines()
+        .filter(|l| l.trim_start().starts_with('{'))
+        .find_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+    {
+        return Ok(v);
+    }
+    let stderr_str = String::from_utf8_lossy(&output.stderr);
+    let stderr_trim = stderr_str.trim();
+    if is_youtube_bot_wall(stderr_trim) {
+        return Err(format!("{BOT_WALL_HINT}\nDetails: {}", stderr_trim.lines().last().unwrap_or("")));
+    }
+    if !output.status.success() {
+        return Err(format!("yt-dlp failed while {context}: {stderr_trim}"));
+    }
+    Err(format!("Could not read yt-dlp result while {context}: {stderr_trim}"))
+}
+
+/// Run `<program> --version` and return the trimmed version line, if any.
+fn version_of(program: &str) -> Option<String> {
+    let mut cmd = Command::new(program);
+    cmd.arg("--version");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    let out = cmd.output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let v = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if v.is_empty() { None } else { Some(v) }
 }
 
 /// Preserves Unicode alphabets (Arabic, Cyrillic, CJK, accented Latin)
@@ -180,12 +240,69 @@ fn sanitize_filename(s: &str) -> String {
     }
 }
 
+
+/// Reject anything that could be parsed as a yt-dlp/spotdl option (e.g. "--exec=...")
+/// or that is not an http(s) URL, spotify URI, or ytsearch/scsearch query.
+fn validate_media_target(raw: &str) -> Result<String, String> {
+    let t = raw.trim();
+    if t.is_empty() {
+        return Err("Empty input".to_string());
+    }
+    if t.starts_with('-') || t.chars().any(|c| c == '\n' || c == '\r' || c == '\0') {
+        return Err("Invalid input".to_string());
+    }
+    let ok = t.starts_with("http://")
+        || t.starts_with("https://")
+        || t.starts_with("spotify:")
+        || t.starts_with("ytsearch")
+        || t.starts_with("scsearch")
+        || t.starts_with("sc:");
+    if !ok {
+        return Err("Unsupported input: expected an http(s) URL or spotify: URI".to_string());
+    }
+    Ok(t.to_string())
+}
+
+/// The only folder the frontend may download into / scan.
+fn allowed_download_dir() -> Result<PathBuf, String> {
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .map_err(|_| "Cannot resolve home directory".to_string())?;
+    let dir = PathBuf::from(home).join("Downloads").join("MG-Lyrics");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Could not create download folder: {e}"))?;
+    dir.canonicalize().map_err(|e| format!("Bad download folder: {e}"))
+}
+
+/// Canonicalize `dir` and make sure it is the download folder or inside it (blocks ../ and symlink escapes).
+fn confine_to_download_dir(dir: &str) -> Result<PathBuf, String> {
+    let base = allowed_download_dir()?;
+    let canon = PathBuf::from(dir)
+        .canonicalize()
+        .map_err(|e| format!("Invalid directory: {e}"))?;
+    if canon.starts_with(&base) {
+        Ok(canon)
+    } else {
+        Err("Directory is outside the MG-Lyrics downloads folder".to_string())
+    }
+}
+
 /// Check whether yt-dlp is installed on the system
 #[tauri::command]
-fn check_ytdlp() -> Result<String, String> {
+async fn check_ytdlp() -> Result<String, String> {
+    tokio::task::spawn_blocking(check_ytdlp_blocking)
+        .await
+        .map_err(|e| format!("Task error: {e}"))?
+}
+
+fn check_ytdlp_blocking() -> Result<String, String> {
     for prog in &["yt-dlp", "yt-dl", "youtube-dl"] {
         if let Some(path) = find_binary_path(prog) {
-            return Ok(path);
+            // Include the installed version so stale yt-dlp installs
+            // (the #1 cause of sudden YouTube failures) are visible.
+            return Ok(match version_of(&path) {
+                Some(v) => format!("{path} (yt-dlp {v})"),
+                None => path,
+            });
         }
     }
 
@@ -205,7 +322,13 @@ fn check_ytdlp() -> Result<String, String> {
 
 /// Check whether spotdl is installed on the system
 #[tauri::command]
-fn check_spotdl() -> Result<String, String> {
+async fn check_spotdl() -> Result<String, String> {
+    tokio::task::spawn_blocking(check_spotdl_blocking)
+        .await
+        .map_err(|e| format!("Task error: {e}"))?
+}
+
+fn check_spotdl_blocking() -> Result<String, String> {
     if let Some(path) = find_binary_path("spotdl") {
         return Ok(path);
     }
@@ -219,7 +342,13 @@ fn check_spotdl() -> Result<String, String> {
 
 /// Check whether ffmpeg is installed on the system
 #[tauri::command]
-fn check_ffmpeg() -> Result<String, String> {
+async fn check_ffmpeg() -> Result<String, String> {
+    tokio::task::spawn_blocking(check_ffmpeg_blocking)
+        .await
+        .map_err(|e| format!("Task error: {e}"))?
+}
+
+fn check_ffmpeg_blocking() -> Result<String, String> {
     if let Some(path) = find_binary_path("ffmpeg") {
         let mut cmd = Command::new(&path);
         cmd.args(["-version"]);
@@ -254,141 +383,353 @@ fn get_download_dir() -> Result<String, String> {
     Ok(dir.to_string_lossy().replace('\\', "/"))
 }
 
-/// Download a single YouTube video OR an entire playlist as MP3 using yt-dlp.
-/// For Spotify URLs, spotdl is used instead.
+// ─────────────────────────────────────────────────────────────────────────────
+// Downloads pipeline (round 2)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Bumping this value cancels every in-flight download (each runner polls it).
+static DL_CANCEL_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// At most 2 downloads run at once; the rest wait in a FIFO queue.
+static DL_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+
 #[tauri::command]
-async fn download_audio(url: String, output_dir: String) -> Result<String, String> {
-    let is_spotify = url.contains("spotify.com") || url.starts_with("spotify:");
+fn cancel_downloads() -> Result<String, String> {
+    DL_CANCEL_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    Ok("cancelled".to_string())
+}
 
-    if is_spotify {
-        let is_track = url.contains("/track/") || url.starts_with("spotify:track:");
-        if is_track {
-            if let Ok(info) = get_preview_info(url.clone(), None, None, None).await {
-                let safe_artist = sanitize_filename(&info.artist);
-                let safe_title = sanitize_filename(&info.title);
-                let out_tmpl = format!("{output_dir}/{safe_artist} - {safe_title}.%(ext)s");
-                let sc = get_ytdlp_cmd().map_err(|_| "yt-dlp not found".to_string())?;
-                let mut cmd = Command::new(&sc.program);
-                cmd.args(&sc.prefix_args);
-                let yt_query = format!("ytsearch1:{} {} Official Audio", info.artist, info.title);
-                let result = cmd
-                    .args([
-                        "-x",
-                        "--audio-format", "mp3",
-                        "--audio-quality", "0",
-                        "--embed-metadata",
-                        "-o", &out_tmpl,
-                        &yt_query,
-                    ])
-                    .output()
-                    .map_err(|e| format!("Download execution failed: {e}"))?;
-                if result.status.success() {
-                    return Ok(format!("Downloaded Spotify track to: {output_dir}"));
-                } else {
-                    let stderr = String::from_utf8_lossy(&result.stderr);
-                    return Err(format!("Download failed: {stderr}"));
+/// `%` is special in yt-dlp output templates: escape it in user/remote supplied text.
+fn tmpl_escape(s: &str) -> String {
+    s.replace('%', "%%")
+}
+
+/// Pick the most useful line out of yt-dlp / spotdl stderr for the UI.
+fn summarize_dl_error(stderr: &str) -> String {
+    let lines: Vec<&str> = stderr
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty()
+            && !l.starts_with("Permission error")
+            && !l.starts_with("Deprecated Feature")
+            && !l.starts_with("WARNING:"))
+        .collect();
+    let picked = lines
+        .iter()
+        .rev()
+        .find(|l| l.starts_with("ERROR:"))
+        .or_else(|| lines.last())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "download failed (no error output)".to_string());
+    let lower = picked.to_lowercase();
+    if lower.contains("no space left") || lower.contains("disk full") || lower.contains("not enough space") {
+        return format!("Disk is full - free some space and retry. ({picked})");
+    }
+    if lower.contains("sign in to confirm") {
+        return format!("YouTube blocked this IP (bot check). Update yt-dlp or provide cookies. ({picked})");
+    }
+    picked
+}
+
+struct DlOutcome {
+    saved: usize,
+    stdout_tail: String,
+}
+
+/// Run a yt-dlp/spotdl process without blocking the async runtime.
+/// - streams `MGLP|bytes|total|percent` progress lines as `mg-download-progress` events
+/// - kills the child on cancel, idle timeout, or if this future is dropped (kill_on_drop)
+/// - returns Err(summary) on any non-zero exit
+async fn run_dl(
+    app: &tauri::AppHandle,
+    sc: &StructuredCommand,
+    args: Vec<String>,
+    job: &str,
+    label: &str,
+    idle_secs: u64,
+) -> Result<DlOutcome, String> {
+    use std::sync::atomic::Ordering;
+    use tauri::Emitter;
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+
+    let gen = DL_CANCEL_GEN.load(Ordering::SeqCst);
+    let mut cmd = tokio::process::Command::new(&sc.program);
+    cmd.args(&sc.prefix_args)
+        .args(&args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    {
+        cmd.creation_flags(0x08000000);
+    }
+    let mut child = cmd.spawn().map_err(|e| format!("Failed to start {}: {e}", sc.program))?;
+    let stdout = child.stdout.take().ok_or("no stdout")?;
+    let mut stderr_pipe = child.stderr.take().ok_or("no stderr")?;
+    let err_task = tokio::spawn(async move {
+        let mut s = String::new();
+        let _ = stderr_pipe.read_to_string(&mut s).await;
+        s
+    });
+
+    let mut lines = BufReader::new(stdout).lines();
+    let mut tail: Vec<String> = Vec::new();
+    let mut saved = 0usize;
+    let mut last_activity = std::time::Instant::now();
+    let mut last_emit = std::time::Instant::now() - std::time::Duration::from_secs(1);
+
+    loop {
+        if DL_CANCEL_GEN.load(Ordering::SeqCst) != gen {
+            let _ = child.kill().await;
+            err_task.abort();
+            return Err("Download cancelled".to_string());
+        }
+        if last_activity.elapsed().as_secs() > idle_secs {
+            let _ = child.kill().await;
+            err_task.abort();
+            return Err(format!("Download stalled: no progress for {idle_secs}s (killed)"));
+        }
+        tokio::select! {
+            l = lines.next_line() => {
+                match l {
+                    Ok(Some(line)) => {
+                        last_activity = std::time::Instant::now();
+                        if let Some(rest) = line.strip_prefix("MGLP|") {
+                            let parts: Vec<&str> = rest.split('|').collect();
+                            let pct = parts.get(2)
+                                .map(|p| p.trim().trim_end_matches('%').trim())
+                                .and_then(|p| p.parse::<f64>().ok());
+                            if let Some(p) = pct {
+                                if last_emit.elapsed().as_millis() >= 150 || p >= 100.0 {
+                                    last_emit = std::time::Instant::now();
+                                    let _ = app.emit("mg-download-progress", serde_json::json!({
+                                        "job": job, "label": label, "percent": p, "phase": "download"
+                                    }));
+                                }
+                            }
+                        } else {
+                            if line.starts_with("[ExtractAudio]") {
+                                let _ = app.emit("mg-download-progress", serde_json::json!({
+                                    "job": job, "label": label, "percent": 100.0, "phase": "convert"
+                                }));
+                            }
+                            if line.starts_with("[Metadata] Adding metadata")
+                                || line.contains("has already been downloaded") {
+                                saved += 1;
+                            }
+                            tail.push(line);
+                            if tail.len() > 20 { tail.remove(0); }
+                        }
+                    }
+                    _ => break,
                 }
             }
+            _ = tokio::time::sleep(std::time::Duration::from_millis(500)) => {}
         }
-
-        // Try spotdl if installed
-        let mut spotdl_cmd: Option<StructuredCommand> = None;
-        if is_command_valid("spotdl", &["--version"]) {
-            spotdl_cmd = Some(StructuredCommand { program: "spotdl".to_string(), prefix_args: vec![] });
-        } else {
-            for py in &["python", "py", "python3"] {
-                if is_command_valid(py, &["-m", "spotdl", "--version"]) {
-                    spotdl_cmd = Some(StructuredCommand { program: py.to_string(), prefix_args: vec!["-m".to_string(), "spotdl".to_string()] });
-                    break;
-                }
-            }
-        }
-
-        if let Some(sc) = spotdl_cmd {
-            let mut cmd = Command::new(&sc.program);
-            cmd.args(&sc.prefix_args);
-            let res = cmd
-                .args(["download", &url, "--output", &format!("{output_dir}/{{title}}.{{output-ext}}")])
-                .current_dir(&output_dir)
-                .output();
-            if let Ok(out) = res {
-                if out.status.success() {
-                    return Ok("Spotify collection downloaded ✓".to_string());
-                }
-            }
-        }
-
-        // Seamless fallback: Parse Spotify collection and download each track via yt-dlp search
-        let info = fetch_spotify_playlist_info(&url).await?;
-        let sc = get_ytdlp_cmd().map_err(|_| "yt-dlp not found".to_string())?;
-        let mut downloaded_count = 0;
-        for t in &info.tracks {
-            let safe_artist = sanitize_filename(&t.artist);
-            let safe_title = sanitize_filename(&t.title);
-            let out_tmpl = format!("{output_dir}/{safe_artist} - {safe_title}.%(ext)s");
-            let mut cmd = Command::new(&sc.program);
-            cmd.args(&sc.prefix_args);
-            let yt_query = format!("ytsearch1:{} {} Official Audio", t.artist, t.title);
-            let res = cmd
-                .args([
-                    "-x",
-                    "--audio-format", "mp3",
-                    "--audio-quality", "0",
-                    "--embed-metadata",
-                    "-o", &out_tmpl,
-                    &yt_query,
-                ])
-                .output();
-            if let Ok(out) = res {
-                if out.status.success() {
-                    downloaded_count += 1;
-                }
-            }
-        }
-        return Ok(format!("Downloaded {downloaded_count}/{} tracks from Spotify collection to: {output_dir}", info.tracks.len()));
     }
 
-    // YouTube / generic URL — use yt-dlp
+    let status = child.wait().await.map_err(|e| format!("Failed waiting for process: {e}"))?;
+    let stderr = err_task.await.unwrap_or_default();
+    if status.success() {
+        Ok(DlOutcome { saved, stdout_tail: tail.join("\n") })
+    } else if saved > 0 {
+        // Playlist with some failed items: keep the good ones, report the rest.
+        Err(format!("Partial: {saved} saved, some items failed - {}", summarize_dl_error(&stderr)))
+    } else {
+        Err(summarize_dl_error(&stderr))
+    }
+}
+
+/// Shared yt-dlp flags for audio downloads.
+fn dl_base_args(ffmpeg: &str, output_dir: &str, template: &str) -> Vec<String> {
+    let mut a: Vec<String> = vec![
+        "-x".into(),
+        "--audio-format".into(), "mp3".into(),
+        "--audio-quality".into(), "0".into(),
+        "--embed-metadata".into(),
+        "--embed-thumbnail".into(),
+        "--convert-thumbnails".into(), "jpg".into(),
+        "--no-overwrites".into(),
+        "--windows-filenames".into(),
+        "--trim-filenames".into(), "150".into(),
+        "--retries".into(), "5".into(),
+        "--fragment-retries".into(), "5".into(),
+        "--newline".into(),
+        "--no-warnings".into(),
+        "--progress-template".into(),
+        "download:MGLP|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress._percent_str)s".into(),
+        "--ffmpeg-location".into(), ffmpeg.to_string(),
+        // finished files go to output_dir; partial fragments live in a hidden subfolder
+        // so a failed run never leaves half files that the library scan would list.
+        "-P".into(), output_dir.to_string(),
+        "-P".into(), format!("temp:{output_dir}/.mgl-partial"),
+        "-o".into(), template.to_string(),
+    ];
+    a.extend(ytdlp_cookie_args()); // MG_LYRICS_YT_COOKIES support (from 09)
+    a.shrink_to_fit();
+    a
+}
+
+#[allow(dead_code)]
+fn is_http_url(u: &str) -> bool {
+    let l = u.to_ascii_lowercase();
+    (l.starts_with("http://") || l.starts_with("https://")) && !u.contains(char::is_whitespace)
+}
+
+/// Download a single YouTube video OR an entire playlist as MP3 using yt-dlp.
+/// For Spotify URLs, spotdl is used instead (when installed), else yt-dlp search per track.
+#[tauri::command]
+async fn download_audio(
+    app: tauri::AppHandle,
+    url: String,
+    output_dir: String,
+    job_id: Option<String>,
+    single: Option<bool>,
+) -> Result<String, String> {
+    let url = validate_media_target(&url)?;
+    let job = job_id.unwrap_or_else(|| "main".to_string());
+    let single = single.unwrap_or(false);
+
+    // validate_media_target rejects anything starting with "-"; "--" is also placed before every target below.
+    let is_spotify = url.contains("spotify.com") || url.starts_with("spotify:");
+
+    // Path confinement (10): never create or write outside ~/Downloads/MG-Lyrics.
+    let base = allowed_download_dir()?;
+    if !std::path::Path::new(&output_dir).exists()
+        && !std::path::Path::new(&output_dir.replace('\\', "/")).starts_with(&base)
+    {
+        return Err("Directory is outside the MG-Lyrics downloads folder".to_string());
+    }
+    std::fs::create_dir_all(&output_dir)
+        .map_err(|e| format!("Cannot create download folder {output_dir}: {e}"))?;
+    confine_to_download_dir(&output_dir)?; // validation only; keep the caller's path form
+    let output_dir = output_dir.replace('\\', "/").trim_end_matches('/').to_string();
+
+    let ffmpeg = find_binary_path("ffmpeg").ok_or_else(|| {
+        "ffmpeg is not installed. It is required to convert audio to MP3 and embed cover art. Install it (winget install ffmpeg) and retry.".to_string()
+    })?;
+
+    // Queue: wait for a free slot (max 2 concurrent downloads).
+    let _slot = DL_SLOTS.acquire().await.map_err(|_| "download queue closed".to_string())?;
+
     let sc = get_ytdlp_cmd().map_err(|_| {
         "yt-dlp is not installed.\nDownload it from: https://github.com/yt-dlp/yt-dlp/releases".to_string()
     })?;
 
-    let out_tmpl = format!("{output_dir}/%(uploader)s - %(title)s.%(ext)s");
+    if is_spotify {
+        return download_spotify(&app, &sc, &ffmpeg, &url, &output_dir, &job).await;
+    }
 
-    let mut cmd = Command::new(&sc.program);
-    cmd.args(&sc.prefix_args);
+    let template = "%(uploader|Unknown)s - %(title)s.%(ext)s";
+    let mut args = dl_base_args(&ffmpeg, &output_dir, template);
+    args.push(if single { "--no-playlist".into() } else { "--yes-playlist".into() });
+    args.push("--".into());
+    args.push(url.clone());
+    let out = run_dl(&app, &sc, args, &job, &url, 180).await?;
+    if out.saved == 0 {
+        // exit 0 but nothing written: be honest about it
+        return Ok(format!("Nothing new to download (already in {output_dir}?)\n{}", out.stdout_tail.lines().last().unwrap_or("")));
+    }
+    Ok(format!("Downloaded {} track(s) to: {output_dir}", out.saved))
+}
 
-    let result = cmd
-        .args([
-            "-x",                      // extract audio only
-            "--audio-format", "mp3",
-            "--audio-quality", "0",    // best quality
-            "--embed-metadata",
-            "-o", &out_tmpl,
-            "--yes-playlist",          // download full playlist if URL is one
-            "--no-warnings",
-            &url,
-        ])
-        .output()
-        .map_err(|e| format!("Failed to run {}: {e}", sc.program))?;
+async fn spotify_search_dl(
+    app: &tauri::AppHandle,
+    sc: &StructuredCommand,
+    ffmpeg: &str,
+    output_dir: &str,
+    job: &str,
+    artist: &str,
+    title: &str,
+) -> Result<DlOutcome, String> {
+    let safe = tmpl_escape(&format!("{} - {}", sanitize_filename(artist), sanitize_filename(title)));
+    let template = format!("{safe}.%(ext)s");
+    let mut args = dl_base_args(ffmpeg, output_dir, &template);
+    args.push("--no-playlist".into());
+    args.push("--".into());
+    args.push(format!("ytsearch1:{artist} {title} Official Audio"));
+    run_dl(app, sc, args, job, &format!("{artist} - {title}"), 180).await
+}
 
-    if result.status.success() {
-        Ok(format!("Downloaded to: {output_dir}"))
-    } else {
-        let stderr = String::from_utf8_lossy(&result.stderr);
-        // yt-dlp returns exit 1 on partial success sometimes — treat non-empty stdout as ok
-        let stdout = String::from_utf8_lossy(&result.stdout);
-        if !stdout.is_empty() {
-            Ok(format!("Downloaded (with warnings) to: {output_dir}"))
-        } else {
-            Err(stderr.to_string())
+async fn download_spotify(
+    app: &tauri::AppHandle,
+    sc: &StructuredCommand,
+    ffmpeg: &str,
+    url: &str,
+    output_dir: &str,
+    job: &str,
+) -> Result<String, String> {
+    let is_track = url.contains("/track/") || url.starts_with("spotify:track:");
+    if is_track {
+        if let Ok(info) = get_preview_info(url.to_string(), None, None, None).await {
+            spotify_search_dl(app, sc, ffmpeg, output_dir, job, &info.artist, &info.title).await?;
+            return Ok(format!("Downloaded Spotify track to: {output_dir}"));
         }
     }
+
+    // Try spotdl if installed
+    let mut spotdl_cmd: Option<StructuredCommand> = None;
+    if is_command_valid("spotdl", &["--version"]) {
+        spotdl_cmd = Some(StructuredCommand { program: "spotdl".to_string(), prefix_args: vec![] });
+    } else {
+        for py in &["python", "py", "python3"] {
+            if is_command_valid(py, &["-m", "spotdl", "--version"]) {
+                spotdl_cmd = Some(StructuredCommand { program: py.to_string(), prefix_args: vec!["-m".to_string(), "spotdl".to_string()] });
+                break;
+            }
+        }
+    }
+    if let Some(spot) = spotdl_cmd {
+        let args = vec![
+            "download".to_string(),
+            url.to_string(),
+            "--output".to_string(),
+            format!("{output_dir}/{{artist}} - {{title}}.{{output-ext}}"),
+        ];
+        match run_dl(app, &spot, args, job, url, 300).await {
+            Ok(_) => return Ok("Spotify collection downloaded ✓".to_string()),
+            Err(e) if e == "Download cancelled" => return Err(e),
+            Err(_) => { /* fall through to the yt-dlp search fallback */ }
+        }
+    }
+
+    // Fallback: parse the Spotify collection and download each track via yt-dlp search
+    let info = fetch_spotify_playlist_info(url).await?;
+    let total = info.tracks.len();
+    let mut ok = 0usize;
+    let mut failed: Vec<String> = Vec::new();
+    for t in &info.tracks {
+        match spotify_search_dl(app, sc, ffmpeg, output_dir, job, &t.artist, &t.title).await {
+            Ok(_) => ok += 1,
+            Err(e) if e == "Download cancelled" => {
+                return Err(format!("Cancelled after {ok}/{total} tracks"));
+            }
+            Err(e) => failed.push(format!("{} - {}: {}", t.artist, t.title, e)),
+        }
+    }
+    if ok == 0 {
+        return Err(format!(
+            "0/{total} tracks downloaded. First error: {}",
+            failed.first().cloned().unwrap_or_default()
+        ));
+    }
+    let mut msg = format!("Downloaded {ok}/{total} tracks from Spotify collection to: {output_dir}");
+    if !failed.is_empty() {
+        msg.push_str(&format!("\n{} failed, e.g. {}", failed.len(), failed[0]));
+    }
+    Ok(msg)
 }
 
 /// Scan the download folder and return all audio files as LocalTrack structs
 #[tauri::command]
-fn scan_local_tracks(dir: String) -> Result<Vec<LocalTrack>, String> {
+async fn scan_local_tracks(dir: String) -> Result<Vec<LocalTrack>, String> {
+    tokio::task::spawn_blocking(move || scan_local_tracks_blocking(dir))
+        .await
+        .map_err(|e| format!("Task error: {e}"))?
+}
+
+fn scan_local_tracks_blocking(dir: String) -> Result<Vec<LocalTrack>, String> {
+    confine_to_download_dir(&dir)?; // validation only; keep the caller's path form (no \\?\ prefix)
     let path = PathBuf::from(&dir);
     let mut tracks: Vec<LocalTrack> = Vec::new();
 
@@ -406,6 +747,10 @@ fn scan_local_tracks(dir: String) -> Result<Vec<LocalTrack>, String> {
             .unwrap_or_default();
 
         if !["mp3", "flac", "ogg", "wav", "aac", "m4a", "opus"].contains(&ext.as_str()) {
+            continue;
+        }
+        // skip hidden / in-progress files
+        if p.file_name().map(|n| n.to_string_lossy().starts_with('.')).unwrap_or(false) {
             continue;
         }
 
@@ -474,10 +819,12 @@ fn clean_query(s: &str) -> String {
         break;
     }
     for pat in &["feat.", " ft.", " ft "] {
-        if let Some(p) = out.to_lowercase().find(pat) { out.truncate(p); break; }
+        // ASCII-only lowercase keeps byte offsets identical to `out` (Unicode to_lowercase can
+        // change byte lengths and make truncate() panic on a non-char-boundary).
+        if let Some(p) = out.to_ascii_lowercase().find(pat) { out.truncate(p); break; }
     }
     let suffixes = [" - official", " - lyric", " - audio", " - video", " - hd", " - live"];
-    let lower = out.to_lowercase();
+    let lower = out.to_ascii_lowercase();
     for suf in &suffixes {
         if let Some(p) = lower.find(suf) { out.truncate(p); break; }
     }
@@ -548,6 +895,12 @@ fn score_audio_candidate(
 ) -> f64 {
     let mut score = 50.0;
     let t_lower = title.to_lowercase();
+    let t_words: Vec<String> = t_lower
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(|w| w.to_string())
+        .collect();
+    let has_word = |w: &str| t_words.iter().any(|x| x == w);
     let c_lower = channel.to_lowercase();
     let u_lower = uploader.to_lowercase();
 
@@ -586,13 +939,13 @@ fn score_audio_candidate(
     if t_lower.contains("official music video") || t_lower.contains("official video") || t_lower.contains("music video") {
         score -= 45.0; // Dialogue scenes, sirens, prolonged video intros
     }
-    if t_lower.contains("movie") || t_lower.contains("film") || t_lower.contains("teaser") {
+    if has_word("movie") || has_word("film") || has_word("teaser") {
         score -= 50.0;
     }
-    if t_lower.contains("live") || t_lower.contains("concert") || t_lower.contains("tour") {
+    if has_word("live") || has_word("concert") || has_word("tour") {
         score -= 35.0;
     }
-    if t_lower.contains("remix") {
+    if has_word("remix") {
         score -= 25.0;
     }
 
@@ -671,9 +1024,17 @@ async fn get_preview_info(
     expected_artist: Option<String>,
     expected_album: Option<String>,
 ) -> Result<PreviewInfo, String> {
-    let input = input.trim();
+    let input_owned = if input.trim_start().starts_with("http") || input.trim_start().starts_with("spotify:") || input.trim_start().starts_with('-') {
+        validate_media_target(&input)?
+    } else {
+        input.trim().to_string()
+    };
+    let input = input_owned.as_str();
     if input.is_empty() {
         return Err("Empty input".to_string());
+    }
+    if input.starts_with('-') {
+        return Err("Invalid input".to_string());
     }
 
     // Direct audio file or direct CDN preview stream
@@ -708,20 +1069,19 @@ async fn get_preview_info(
 
     // Direct YouTube or SoundCloud URL
     if is_direct_youtube || is_soundcloud {
-        let output = run_ytdlp_args(&sc, vec![
+        let mut direct_args = vec![
             "--dump-json".to_string(),
-            "-f".to_string(), "ba[ext=m4a]/ba[abr<=128]/ba".to_string(),
+            "-f".to_string(), "ba[ext=m4a][protocol^=http]/ba[protocol^=http]/ba[abr<=128]/ba".to_string(),
+            "--no-playlist".to_string(),
             "--force-ipv4".to_string(),
             "--no-warnings".to_string(),
-            input.to_string(),
-        ], 10).await?;
+        ];
+        direct_args.extend(ytdlp_cookie_args());
+        direct_args.push("--".to_string());
+        direct_args.push(input.to_string());
+        let output = run_ytdlp_args(&sc, direct_args, 60).await?;
 
-        let stdout_str = String::from_utf8_lossy(&output.stdout);
-        let v: serde_json::Value = stdout_str
-            .lines()
-            .filter(|l| l.trim_start().starts_with('{'))
-            .find_map(|l| serde_json::from_str(l).ok())
-            .ok_or_else(|| "Failed to parse stream metadata from yt-dlp".to_string())?;
+        let v = parse_ytdlp_json_output(&output, "resolving the stream")?;
 
         let title = v["title"].as_str().unwrap_or("Unknown").to_string();
         let artist = v["uploader"].as_str()
@@ -768,10 +1128,10 @@ async fn get_preview_info(
         };
 
         if !track_id.is_empty() {
-            let embed_url = format!("https://open.spotify.com/embed/track/{track_id}");
+            let embed_url = format!("{}/embed/track/{track_id}", config::spotify_base());
             let client = reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(8))
-                .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                .timeout(config::embed_timeout())
+                .user_agent(config::browser_user_agent())
                 .build()
                 .map_err(|e| format!("HTTP client error: {e}"))?;
 
@@ -822,12 +1182,12 @@ async fn get_preview_info(
 
         if target_query.is_empty() {
             let client = reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(10))
-                .user_agent("MG-Lyrics/1.0")
+                .timeout(config::http_timeout())
+                .user_agent(config::api_user_agent())
                 .build()
                 .map_err(|e| format!("HTTP client error: {e}"))?;
             let encoded_input = urlencoding::encode(input);
-            let url = format!("https://open.spotify.com/oembed?url={}", encoded_input);
+            let url = format!("{}/oembed?url={}", config::spotify_base(), encoded_input);
             if let Ok(resp) = client.get(&url).send().await {
                 if resp.status().is_success() {
                     if let Ok(v) = resp.json::<serde_json::Value>().await {
@@ -868,7 +1228,7 @@ async fn get_preview_info(
             "--no-warnings".to_string(),
             "--quiet".to_string(),
             format!("ytsearch5:{}", target_query),
-        ], 12).await;
+        ], 45).await;
 
         if let Ok(search_out) = search_res {
             let stdout_str = String::from_utf8_lossy(&search_out.stdout);
@@ -909,7 +1269,7 @@ async fn get_preview_info(
 
         if let Some(best) = scored.first() {
             eprintln!("[audio_ranker] WINNER: score={:.1} id={} title=\"{}\"", best.0, best.1, best.2);
-            chosen_url = format!("https://www.youtube.com/watch?v={}", best.1);
+            chosen_url = format!("{}/watch?v={}", config::youtube_base(), best.1);
         }
     }
 
@@ -924,28 +1284,19 @@ async fn get_preview_info(
         "--force-ipv4".to_string(),
         "--no-warnings".to_string(),
     ];
+    args.extend(ytdlp_cookie_args());
     if chosen_url.starts_with("ytsearch") || chosen_url.starts_with("scsearch") {
         args.push("--playlist-items".to_string());
         args.push("1".to_string());
     } else {
         args.push("--no-playlist".to_string());
     }
+    args.push("--".to_string());
     args.push(chosen_url.clone());
 
-    let output = run_ytdlp_args(&sc, args, 15).await?;
+    let output = run_ytdlp_args(&sc, args, 60).await?;
 
-    let stdout_str = String::from_utf8_lossy(&output.stdout);
-    let stderr_str = String::from_utf8_lossy(&output.stderr);
-
-    if !output.status.success() && stdout_str.trim().is_empty() {
-        return Err(format!("yt-dlp failed: {}", stderr_str.trim()));
-    }
-
-    let v: serde_json::Value = stdout_str
-        .lines()
-        .filter(|l| l.trim_start().starts_with('{'))
-        .find_map(|l| serde_json::from_str(l).ok())
-        .ok_or_else(|| format!("No valid JSON in yt-dlp output: {}", stderr_str.trim()))?;
+    let v = parse_ytdlp_json_output(&output, "extracting the audio stream")?;
 
     let stream_url = extract_stream_url_from_json(&v);
     let duration = v["duration"].as_f64().or(effective_expected_duration);
@@ -992,24 +1343,53 @@ async fn get_preview_info(
 pub struct LyricLine {
     pub time: f64,
     pub text: String,
+    /// true when `time` is an even-spacing estimate (plain, unsynced lyrics), not a real timestamp
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub est: bool,
 }
 
-/// Parse LRC timed lyrics into LyricLine vec
+/// Strip enhanced-LRC inline word timestamps such as `<00:12.34>` from a lyric line.
+fn strip_word_tags(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(open) = rest.find('<') {
+        match rest[open..].find('>') {
+            Some(rel) if parse_timestamp(&rest[open + 1..open + rel]).is_some() => {
+                out.push_str(&rest[..open]);
+                rest = &rest[open + rel + 1..];
+            }
+            _ => {
+                out.push_str(&rest[..open + 1]);
+                rest = &rest[open + 1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Parse LRC timed lyrics into LyricLine vec.
+/// Handles multiple timestamps per line, `[mm:ss]`, `[mm:ss.xx]`, `[mm:ss:xx]`,
+/// the `[offset:+/-ms]` header, enhanced word tags, and keeps blank timestamped
+/// lines as an instrumental-gap marker so the previous line does not linger.
 fn parse_lrc(lrc: &str) -> Vec<LyricLine> {
     let mut lines: Vec<LyricLine> = Vec::new();
+    // LRC spec: positive offset = lyrics appear EARLIER (shift timestamps by -offset).
+    let mut offset_sec = 0.0_f64;
     for raw in lrc.lines() {
-        let raw = raw.trim();
+        let raw = raw.trim().trim_start_matches('\u{feff}');
         if raw.is_empty() { continue; }
-        // Extract all timestamps like [mm:ss.xx]
         let mut times: Vec<f64> = Vec::new();
         let mut rest = raw;
         while rest.starts_with('[') {
             if let Some(close) = rest.find(']') {
                 let tag = &rest[1..close];
-                // only parse if it looks like a timestamp
                 if let Some(t) = parse_timestamp(tag) {
                     times.push(t);
                 } else {
+                    if let Some(v) = tag.strip_prefix("offset:") {
+                        if let Ok(ms) = v.trim().parse::<f64>() { offset_sec = ms / 1000.0; }
+                    }
                     break; // metadata tag, stop
                 }
                 rest = &rest[close + 1..];
@@ -1017,21 +1397,41 @@ fn parse_lrc(lrc: &str) -> Vec<LyricLine> {
                 break;
             }
         }
-        let text = rest.trim().to_string();
-        if text.is_empty() || times.is_empty() { continue; }
+        if times.is_empty() { continue; }
+        let text = strip_word_tags(rest.trim());
+        let text = if text.is_empty() { String::new() } else { text };
         for t in times {
-            lines.push(LyricLine { time: t, text: text.clone() });
+            lines.push(LyricLine { time: t, text: text.clone(), est: false });
         }
     }
+    for l in lines.iter_mut() {
+        l.time = (l.time - offset_sec).max(0.0);
+    }
     lines.sort_by(|a, b| a.time.partial_cmp(&b.time).unwrap_or(std::cmp::Ordering::Equal));
+    // Blank lines become an instrumental marker; a trailing blank is dropped.
+    while lines.last().map_or(false, |l| l.text.is_empty()) { lines.pop(); }
+    for l in lines.iter_mut() {
+        if l.text.is_empty() { l.text = "♪".to_string(); }
+    }
+    // Collapse consecutive identical markers.
+    lines.dedup_by(|b, a| a.text == "♪" && b.text == "♪");
     lines
 }
 
+/// Accepts `mm:ss`, `mm:ss.xx`, `mm:ss:xx` (colon used as fraction separator).
 fn parse_timestamp(s: &str) -> Option<f64> {
-    // mm:ss.xx or mm:ss
+    let s = s.trim();
     let colon = s.find(':')?;
-    let mins: f64 = s[..colon].parse().ok()?;
-    let secs: f64 = s[colon + 1..].parse().ok()?;
+    let mins_str = &s[..colon];
+    if mins_str.is_empty() || !mins_str.bytes().all(|b| b.is_ascii_digit()) { return None; }
+    let mins: f64 = mins_str.parse().ok()?;
+    let mut sec_str = s[colon + 1..].to_string();
+    if let Some(c2) = sec_str.find(':') {
+        sec_str.replace_range(c2..c2 + 1, ".");
+    }
+    if sec_str.is_empty() || !sec_str.bytes().all(|b| b.is_ascii_digit() || b == b'.') { return None; }
+    let secs: f64 = sec_str.parse().ok()?;
+    if !mins.is_finite() || !secs.is_finite() { return None; }
     Some(mins * 60.0 + secs)
 }
 
@@ -1040,7 +1440,7 @@ fn parse_plain(plain: &str, duration_sec: f64) -> Vec<LyricLine> {
     if lines.is_empty() { return vec![]; }
     let step = if duration_sec > 0.0 { duration_sec / lines.len() as f64 } else { 5.0 };
     lines.iter().enumerate()
-        .map(|(i, &text)| LyricLine { time: i as f64 * step, text: text.to_string() })
+        .map(|(i, &text)| LyricLine { time: i as f64 * step, text: text.to_string(), est: true })
         .collect()
 }
 
@@ -1059,7 +1459,7 @@ fn extract_lyrics_from_json(data: &serde_json::Value, duration_sec: f64) -> Opti
         }
     }
     if data["instrumental"].as_bool().unwrap_or(false) {
-        return Some(vec![LyricLine { time: 0.0, text: "✦ Instrumental ✦".to_string() }]);
+        return Some(vec![LyricLine { time: 0.0, text: "✦ Instrumental ✦".to_string(), est: true }]);
     }
     None
 }
@@ -1148,7 +1548,6 @@ fn match_confidence(
     title_score + artist_score + album_score + duration_score
 }
 
-const MATCH_THRESHOLD: f64 = 65.0;
 
 /// Check whether a lrclib result is a plausible match for the requested title/artist/album.
 /// Returns the confidence score (0-100) or 0 if below threshold.
@@ -1173,11 +1572,11 @@ fn score_match(
         score, clean_artist, clean_title, clean_album, res_artist, res_title, res_album, duration_sec,
         res_duration.map(|d| format!("{:.0}", d)).unwrap_or_else(|| "?".to_string()));
 
-    if score >= MATCH_THRESHOLD { score } else { 0.0 }
+    if score >= config::match_threshold() { score } else { 0.0 }
 }
 
 /// Pick the best-scoring result from a lrclib search array.
-/// Returns the lyrics from the highest-confidence match above MATCH_THRESHOLD, preferring synced lyrics.
+/// Returns the lyrics from the highest-confidence match above the match threshold, preferring synced lyrics.
 fn pick_best_match(
     arr: &[serde_json::Value],
     clean_title: &str,
@@ -1192,7 +1591,7 @@ fn pick_best_match(
             let final_score = if has_synced { raw_score + 20.0 } else { raw_score };
             (final_score, i, has_synced)
         })
-        .filter(|(score, _, _)| *score >= MATCH_THRESHOLD)
+        .filter(|(score, _, _)| *score >= config::match_threshold())
         .collect();
 
     // Sort: highest score first, prefer synced at same score
@@ -1233,8 +1632,8 @@ async fn fetch_lyrics(
     eprintln!("[lyrics] SEARCH_STARTED: title=\"{}\" artist=\"{}\" album={:?} duration={:.0}s", title, artist, album, duration_sec);
 
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .user_agent("MG-Lyrics/1.0")
+        .timeout(config::http_timeout())
+        .user_agent(config::api_user_agent())
         .build()
         .map_err(|e| format!("HTTP client error: {e}"))?;
 
@@ -1255,7 +1654,8 @@ async fn fetch_lyrics(
         for art in [&ca, &pa] {
             if art.is_empty() { continue; }
             let mut url = format!(
-                "https://lrclib.net/api/get?track_name={}&artist_name={}&album_name={}",
+                "{}/get?track_name={}&artist_name={}&album_name={}",
+                config::lrclib_api(),
                 urlencoding::encode(&ct),
                 urlencoding::encode(art),
                 urlencoding::encode(alb)
@@ -1269,7 +1669,7 @@ async fn fetch_lyrics(
                     if let Ok(data) = resp.json::<serde_json::Value>().await {
                         if !data.is_null() {
                             let score = score_match(&data, &ct, &ca, alb_opt, duration_sec);
-                            if score >= MATCH_THRESHOLD {
+                            if score >= config::match_threshold() {
                                 if let Some(lyrics) = extract_lyrics_from_json(&data, duration_sec) {
                                     eprintln!("[lyrics] STEP0_ALBUM_HIT: matched score={:.1}, {} lines", score, lyrics.len());
                                     return Ok(lyrics);
@@ -1286,7 +1686,8 @@ async fn fetch_lyrics(
     for art in [&ca, &pa] {
         if art.is_empty() { continue; }
         let mut url = format!(
-            "https://lrclib.net/api/get?track_name={}&artist_name={}",
+            "{}/get?track_name={}&artist_name={}",
+            config::lrclib_api(),
             urlencoding::encode(&ct),
             urlencoding::encode(art)
         );
@@ -1299,13 +1700,13 @@ async fn fetch_lyrics(
                 if let Ok(data) = resp.json::<serde_json::Value>().await {
                     if !data.is_null() {
                         let score = score_match(&data, &ct, &ca, alb_opt, duration_sec);
-                        if score >= MATCH_THRESHOLD {
+                        if score >= config::match_threshold() {
                             if let Some(lyrics) = extract_lyrics_from_json(&data, duration_sec) {
                                 eprintln!("[lyrics] STEP1_HIT: Direct GET matched with score={:.1}, {} lines", score, lyrics.len());
                                 return Ok(lyrics);
                             }
                         } else {
-                            eprintln!("[lyrics] STEP1_REJECTED: Direct GET result score={:.1} below threshold {:.0}", score, MATCH_THRESHOLD);
+                            eprintln!("[lyrics] STEP1_REJECTED: Direct GET result score={:.1} below threshold {:.0}", score, config::match_threshold());
                         }
                     }
                 }
@@ -1317,7 +1718,8 @@ async fn fetch_lyrics(
     for art in [&ca, &pa] {
         if art.is_empty() { continue; }
         let url = format!(
-            "https://lrclib.net/api/get?track_name={}&artist_name={}",
+            "{}/get?track_name={}&artist_name={}",
+            config::lrclib_api(),
             urlencoding::encode(&ct),
             urlencoding::encode(art)
         );
@@ -1327,7 +1729,7 @@ async fn fetch_lyrics(
                 if let Ok(data) = resp.json::<serde_json::Value>().await {
                     if !data.is_null() {
                         let score = score_match(&data, &ct, &ca, alb_opt, duration_sec);
-                        if score >= MATCH_THRESHOLD {
+                        if score >= config::match_threshold() {
                             if let Some(lyrics) = extract_lyrics_from_json(&data, duration_sec) {
                                 eprintln!("[lyrics] STEP2_HIT: Direct GET (no dur) matched with score={:.1}, {} lines", score, lyrics.len());
                                 return Ok(lyrics);
@@ -1349,7 +1751,7 @@ async fn fetch_lyrics(
         search_queries.push(format!("{} {}", pa, ct));
     }
     for q in search_queries {
-        let url = format!("https://lrclib.net/api/search?q={}", urlencoding::encode(&q));
+        let url = format!("{}/search?q={}", config::lrclib_api(), urlencoding::encode(&q));
         eprintln!("[lyrics] STEP3: Fuzzy search q=\"{}\"", q);
         if let Ok(resp) = client.get(&url).send().await {
             if resp.status().is_success() {
@@ -1367,7 +1769,7 @@ async fn fetch_lyrics(
 
     // ── Step 4: Fuzzy search title only — pick best scored match ──
     {
-        let url = format!("https://lrclib.net/api/search?q={}", urlencoding::encode(&ct));
+        let url = format!("{}/search?q={}", config::lrclib_api(), urlencoding::encode(&ct));
         eprintln!("[lyrics] STEP4: Title-only search q=\"{}\"", ct);
         if let Ok(resp) = client.get(&url).send().await {
             if resp.status().is_success() {
@@ -1460,10 +1862,10 @@ async fn fetch_spotify_playlist_info(url: &str) -> Result<PlaylistInfo, String> 
         return Err("Invalid Spotify URL: missing ID".to_string());
     }
 
-    let embed_url = format!("https://open.spotify.com/embed/{entity_type}/{id}");
+    let embed_url = format!("{}/embed/{entity_type}/{id}", config::spotify_base());
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(12))
-        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        .timeout(config::playlist_timeout())
+        .user_agent(config::browser_user_agent())
         .build()
         .map_err(|e| format!("HTTP client error: {e}"))?;
 
@@ -1546,7 +1948,7 @@ async fn fetch_spotify_playlist_info(url: &str) -> Result<PlaylistInfo, String> 
             .unwrap_or("Unknown Artist")
             .to_string();
         let duration_ms = entity["duration"].as_f64().unwrap_or(0.0);
-        let video_url = format!("https://open.spotify.com/track/{id}");
+        let video_url = format!("{}/track/{id}", config::spotify_base());
 
         tracks.push(PlaylistTrack {
             id: id.to_string(),
@@ -1574,7 +1976,7 @@ async fn fetch_spotify_playlist_info(url: &str) -> Result<PlaylistInfo, String> 
                 .map(|s| s.to_string())
                 .or_else(|| album_from_entity.clone());
 
-            let video_url = format!("https://open.spotify.com/track/{t_id}");
+            let video_url = format!("{}/track/{t_id}", config::spotify_base());
 
             tracks.push(PlaylistTrack {
                 id: if !t_id.is_empty() { t_id } else { t_title.clone() },
@@ -1594,7 +1996,7 @@ async fn fetch_spotify_playlist_info(url: &str) -> Result<PlaylistInfo, String> 
     if tracks.is_empty() {
         // Fallback 1: Query Spotify oEmbed to discover playlist/artist/album name
         let encoded_url = urlencoding::encode(clean_url);
-        let oembed_url = format!("https://open.spotify.com/oembed?url={}", encoded_url);
+        let oembed_url = format!("{}/oembed?url={}", config::spotify_base(), encoded_url);
         if let Ok(oembed_resp) = client.get(&oembed_url).send().await {
             if oembed_resp.status().is_success() {
                 if let Ok(oembed_val) = oembed_resp.json::<serde_json::Value>().await {
@@ -1634,9 +2036,22 @@ async fn fetch_spotify_playlist_info(url: &str) -> Result<PlaylistInfo, String> 
     })
 }
 
+/// Max entries fetched per playlist (was a silent 50 cap).
+const PLAYLIST_MAX_ENTRIES: u32 = 200;
+/// Large playlists need more than the old 12s; yt-dlp flat extraction of 200 items can take 20-40s.
+const PLAYLIST_FETCH_TIMEOUT_SECS: u64 = 60;
+
 #[tauri::command]
 async fn get_playlist_info(url: String) -> Result<PlaylistInfo, String> {
-    let url_trimmed = url.trim();
+    let url_owned = if url.trim_start().starts_with('-') || url.trim_start().starts_with("http") || url.trim_start().starts_with("spotify:") {
+        validate_media_target(&url)?
+    } else {
+        url.trim().to_string()
+    };
+    let url_trimmed = url_owned.as_str();
+    if url_trimmed.starts_with('-') || url_trimmed.contains('\n') {
+        return Err("Invalid input".to_string());
+    }
     if url_trimmed.contains("spotify.com") || url_trimmed.starts_with("spotify:") {
         return fetch_spotify_playlist_info(url_trimmed).await;
     }
@@ -1649,20 +2064,29 @@ async fn get_playlist_info(url: String) -> Result<PlaylistInfo, String> {
     };
 
     let sc = get_ytdlp_cmd().map_err(|_| "yt-dlp not found".to_string())?;
-    let output = run_ytdlp_args(&sc, vec![
+    let mut pl_args = vec![
         "--dump-single-json".to_string(),
         "--flat-playlist".to_string(),
-        "--playlist-end".to_string(), "50".to_string(),
+        "--playlist-end".to_string(), PLAYLIST_MAX_ENTRIES.to_string(),
+        "--ignore-errors".to_string(),
         "--force-ipv4".to_string(),
         "--no-warnings".to_string(),
         "--quiet".to_string(),
-        search_target,
-    ], 12).await?;
+    ];
+    pl_args.extend(ytdlp_cookie_args());
+    pl_args.push("--".to_string());
+    pl_args.push(search_target);
+    let output = run_ytdlp_args(&sc, pl_args, PLAYLIST_FETCH_TIMEOUT_SECS).await?;
 
     let stdout_str = String::from_utf8_lossy(&output.stdout);
     let stderr_str = String::from_utf8_lossy(&output.stderr);
 
-    if !output.status.success() || stdout_str.trim().is_empty() {
+    // yt-dlp can exit non-zero when a few playlist entries are unavailable
+    // while still emitting valid JSON for the rest; only fail if nothing usable came back.
+    if stdout_str.trim().is_empty() {
+        if is_youtube_bot_wall(&stderr_str) {
+            return Err(BOT_WALL_HINT.to_string());
+        }
         return Err(format!(
             "Failed to fetch playlist info.\nstderr: {}",
             stderr_str.trim()
@@ -1690,11 +2114,24 @@ async fn get_playlist_info(url: String) -> Result<PlaylistInfo, String> {
         .to_string();
 
     let mut tracks = Vec::new();
-    if let Some(entries) = v["entries"].as_array() {
+    // A single-video / single-track URL has no "entries": treat the root object as one entry
+    // instead of returning an empty (apparently failed) playlist.
+    let single_entry: Vec<serde_json::Value> = if !v["entries"].is_array() && v["id"].is_string() {
+        vec![v.clone()]
+    } else {
+        Vec::new()
+    };
+    let entries: &[serde_json::Value] = v["entries"]
+        .as_array()
+        .map(|a| a.as_slice())
+        .unwrap_or(single_entry.as_slice());
+    {
         for entry in entries {
             let id = entry["id"].as_str().unwrap_or("").to_string();
             if id.is_empty() { continue; }
-            let t_title = entry["title"].as_str().unwrap_or("Unknown Song").to_string();
+            let raw_title = entry["title"].as_str().unwrap_or("Unknown Song");
+            if raw_title == "[Private video]" || raw_title == "[Deleted video]" { continue; }
+            let t_title = raw_title.to_string();
             let t_artist = entry["uploader"].as_str()
                 .or_else(|| entry["channel"].as_str())
                 .unwrap_or("Unknown Artist")
@@ -1707,7 +2144,7 @@ async fn get_playlist_info(url: String) -> Result<PlaylistInfo, String> {
             
             // If webpage_url/url is missing, build it from id
             let video_url = if video_url.is_empty() {
-                format!("https://www.youtube.com/watch?v={id}")
+                format!("{}/watch?v={id}", config::youtube_base())
             } else {
                 video_url
             };
@@ -1771,7 +2208,7 @@ async fn search_online_tracks(query: String, provider: String) -> Result<Vec<Pla
     };
 
     let sc = get_ytdlp_cmd().map_err(|_| "yt-dlp not found".to_string())?;
-    let output = match run_ytdlp_args(&sc, vec![
+    let output = run_ytdlp_args(&sc, vec![
         "--dump-single-json".to_string(),
         "--flat-playlist".to_string(),
         "--playlist-end".to_string(), "15".to_string(),
@@ -1779,17 +2216,18 @@ async fn search_online_tracks(query: String, provider: String) -> Result<Vec<Pla
         "--no-warnings".to_string(),
         "--quiet".to_string(),
         search_target,
-    ], 10).await {
-        Ok(out) => out,
-        Err(e) => {
-            eprintln!("[search_online_tracks] search failed or timed out: {e}");
-            return Ok(Vec::new());
-        }
-    };
+    ], 45).await.map_err(|e| {
+        eprintln!("[search_online_tracks] search failed or timed out: {e}");
+        format!("Search failed: {e}")
+    })?;
 
     let stdout_str = String::from_utf8_lossy(&output.stdout);
     if !output.status.success() || stdout_str.trim().is_empty() {
-        return Ok(Vec::new());
+        let stderr_str = String::from_utf8_lossy(&output.stderr);
+        if is_youtube_bot_wall(&stderr_str) {
+            return Err(BOT_WALL_HINT.to_string());
+        }
+        return Err(format!("Search failed: {}", stderr_str.trim()));
     }
 
     let v: serde_json::Value = serde_json::from_str(&stdout_str)
@@ -1812,9 +2250,9 @@ async fn search_online_tracks(query: String, provider: String) -> Result<Vec<Pla
                 .to_string();
             let video_url = if video_url.is_empty() {
                 if is_sc {
-                    format!("https://soundcloud.com/{id}")
+                    format!("{}/{id}", config::soundcloud_base())
                 } else {
-                    format!("https://www.youtube.com/watch?v={id}")
+                    format!("{}/watch?v={id}", config::youtube_base())
                 }
             } else {
                 video_url
@@ -2071,7 +2509,7 @@ async fn search_online_playlists(query: String, provider: String) -> Result<Vec<
         if let Ok(sc) = get_ytdlp_cmd() {
             let encoded_q = urlencoding::encode(q);
             // sp=EgIQAw%3D%3D is the canonical YouTube playlist search filter
-            let search_url = format!("https://www.youtube.com/results?search_query={}&sp=EgIQAw%3D%3D", encoded_q);
+            let search_url = format!("{}/results?search_query={}&sp=EgIQAw%3D%3D", config::youtube_base(), encoded_q);
 
             let primary_res = run_ytdlp_args(&sc, vec![
                 "--dump-single-json".to_string(),
@@ -2110,7 +2548,7 @@ async fn search_online_playlists(query: String, provider: String) -> Result<Vec<
                                     .unwrap_or("")
                                     .to_string();
                                 let url = if url.is_empty() {
-                                    format!("https://www.youtube.com/playlist?list={id}")
+                                    format!("{}/playlist?list={id}", config::youtube_base())
                                 } else {
                                     url
                                 };
@@ -2174,7 +2612,7 @@ async fn search_online_playlists(query: String, provider: String) -> Result<Vec<
                                         .unwrap_or("")
                                         .to_string();
                                     let url = if raw_url.is_empty() {
-                                        format!("https://www.youtube.com/watch?v={id}")
+                                        format!("{}/watch?v={id}", config::youtube_base())
                                     } else {
                                         raw_url
                                     };
@@ -2200,6 +2638,30 @@ async fn search_online_playlists(query: String, provider: String) -> Result<Vec<
     Ok(results)
 }
 
+/// Destroys every window except `main` (currently just the floating lyrics overlay).
+///
+/// Tauri only terminates the process once the *last* window is gone. The lyrics overlay
+/// is a second top-level window, so closing the main window used to leave a live process
+/// behind holding an always-on-top, click-through, taskbar-less window on screen that the
+/// user had no way to dismiss short of Task Manager.
+fn destroy_aux_windows<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    for (label, window) in app.webview_windows() {
+        if label != "main" {
+            let _ = window.destroy();
+        }
+    }
+}
+
+/// Lets the overlay window shut itself down (watchdog or its own close button) without
+/// needing window-destroy permissions in the webview ACL.
+#[tauri::command]
+fn close_overlay_window(window: tauri::WebviewWindow) -> Result<(), String> {
+    if window.label() == "main" {
+        return Err("close_overlay_window refuses to close the main window".to_string());
+    }
+    window.destroy().map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -2216,12 +2678,35 @@ pub fn run() {
             main_win.set_focus().ok();
             Ok(())
         })
+        // Window lifecycle: the main window owns the process. When it is closed or
+        // destroyed, take the overlay down with it so no orphan window survives.
+        .on_window_event(|window, event| {
+            if window.label() != "main" {
+                return;
+            }
+            match event {
+                tauri::WindowEvent::CloseRequested { .. } => {
+                    destroy_aux_windows(window.app_handle());
+                }
+                tauri::WindowEvent::Destroyed => {
+                    destroy_aux_windows(window.app_handle());
+                    // If anything is still alive, force the process down instead of
+                    // leaving a window with no owner and no taskbar entry.
+                    if !window.app_handle().webview_windows().is_empty() {
+                        window.app_handle().exit(0);
+                    }
+                }
+                _ => {}
+            }
+        })
         .invoke_handler(tauri::generate_handler![
+            close_overlay_window,
             check_ytdlp,
             check_spotdl,
             check_ffmpeg,
             get_download_dir,
             download_audio,
+            cancel_downloads,
             scan_local_tracks,
             get_preview_info,
             fetch_lyrics,
@@ -2350,3 +2835,46 @@ mod live_tests {
 }
 
 
+
+
+#[cfg(test)]
+mod lrc_tests {
+    use super::*;
+
+    #[test]
+    fn basic_and_multi_timestamp() {
+        let l = parse_lrc("[00:10.50]Hello\n[00:20.00][01:00.25]World");
+        let t: Vec<(f64, &str)> = l.iter().map(|x| (x.time, x.text.as_str())).collect();
+        assert_eq!(t, vec![(10.5, "Hello"), (20.0, "World"), (60.25, "World")]);
+    }
+
+    #[test]
+    fn colon_fraction_and_three_digit_ms() {
+        assert_eq!(parse_timestamp("01:02:50"), Some(62.5));
+        assert_eq!(parse_timestamp("00:01.234"), Some(1.234));
+        assert_eq!(parse_timestamp("ar:Artist"), None);
+        assert_eq!(parse_timestamp("offset:+500"), None);
+    }
+
+    #[test]
+    fn offset_tag_applied() {
+        let l = parse_lrc("[offset:+500]\n[00:10.00]A\n[00:20.00]B");
+        assert!((l[0].time - 9.5).abs() < 1e-9);
+        assert!((l[1].time - 19.5).abs() < 1e-9);
+        let l = parse_lrc("[offset:-250]\n[00:10.00]A");
+        assert!((l[0].time - 10.25).abs() < 1e-9);
+    }
+
+    #[test]
+    fn enhanced_word_tags_stripped() {
+        let l = parse_lrc("[00:05.00]<00:05.00>Hel<00:05.40>lo <00:06.00>there");
+        assert_eq!(l[0].text, "Hello there");
+    }
+
+    #[test]
+    fn blank_line_becomes_gap_marker_trailing_dropped() {
+        let l = parse_lrc("[00:05.00]A\n[00:15.00]\n[00:30.00]B\n[00:40.00]");
+        let t: Vec<&str> = l.iter().map(|x| x.text.as_str()).collect();
+        assert_eq!(t, vec!["A", "♪", "B"]);
+    }
+}

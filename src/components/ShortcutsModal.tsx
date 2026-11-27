@@ -1,3 +1,4 @@
+import { memo } from "react";
 import React, { useEffect } from "react";
 
 interface ShortcutsModalProps {
@@ -19,7 +20,7 @@ interface ShortcutCategory {
 const SHORTCUT_CATEGORIES: ShortcutCategory[] = [
   {
     category: "Playback & Seeking",
-    color: "#8A2BE2",
+    color: "var(--accent)",
     shortcuts: [
       { keys: ["Space", "K"], description: "Play / Pause playback" },
       { keys: ["←", "→"], description: "Seek backward / forward 5 seconds" },
@@ -32,7 +33,7 @@ const SHORTCUT_CATEGORIES: ShortcutCategory[] = [
   },
   {
     category: "Floating Desktop Lyrics",
-    color: "#00F0FF",
+    color: "var(--accent)",
     shortcuts: [
       { keys: ["L"], description: "Toggle floating lyrics window" },
       { keys: ["P"], description: "Toggle Pin (always on top / click-through)" },
@@ -53,7 +54,7 @@ const SHORTCUT_CATEGORIES: ShortcutCategory[] = [
   },
 ];
 
-export default function ShortcutsModal({ isOpen, onClose }: ShortcutsModalProps) {
+function ShortcutsModal({ isOpen, onClose }: ShortcutsModalProps) {
   useEffect(() => {
     if (!isOpen) return;
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -75,8 +76,8 @@ export default function ShortcutsModal({ isOpen, onClose }: ShortcutsModalProps)
         position: "fixed",
         inset: 0,
         backgroundColor: "rgba(0, 0, 0, 0.75)",
-        backdropFilter: "blur(12px)",
-        WebkitBackdropFilter: "blur(12px)",
+        
+        
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
@@ -91,10 +92,10 @@ export default function ShortcutsModal({ isOpen, onClose }: ShortcutsModalProps)
           width: "100%",
           maxWidth: "680px",
           maxHeight: "88vh",
-          backgroundColor: "rgba(16, 16, 26, 0.95)",
+          backgroundColor: "color-mix(in srgb, var(--surface) 100%, transparent)",
           borderRadius: "22px",
-          border: "1px solid rgba(255, 255, 255, 0.1)",
-          boxShadow: "0 24px 60px rgba(0, 0, 0, 0.7), 0 0 40px rgba(138, 43, 226, 0.15)",
+          border: "1px solid color-mix(in srgb, var(--text) 10%, transparent)",
+          boxShadow: "0 24px 60px rgba(0, 0, 0, 0.7), 0 0 40px color-mix(in srgb, var(--accent) 15%, transparent)",
           display: "flex",
           flexDirection: "column",
           overflow: "hidden",
@@ -104,11 +105,11 @@ export default function ShortcutsModal({ isOpen, onClose }: ShortcutsModalProps)
         <div
           style={{
             padding: "20px 24px",
-            borderBottom: "1px solid rgba(255, 255, 255, 0.08)",
+            borderBottom: "1px solid color-mix(in srgb, var(--text) 8%, transparent)",
             display: "flex",
             alignItems: "center",
             justifyContent: "space-between",
-            background: "linear-gradient(180deg, rgba(255,255,255,0.03) 0%, transparent 100%)",
+            background: "var(--surface-2) 0%, transparent 100%)",
           }}
         >
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
@@ -117,12 +118,12 @@ export default function ShortcutsModal({ isOpen, onClose }: ShortcutsModalProps)
                 width: 36,
                 height: 36,
                 borderRadius: 10,
-                background: "linear-gradient(135deg, #8A2BE2, #00F0FF)",
+                background: "var(--surface-2)",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
-                color: "#fff",
-                boxShadow: "0 4px 15px rgba(138, 43, 226, 0.35)",
+                color: "var(--text)",
+                boxShadow: "0 4px 15px color-mix(in srgb, var(--accent) 35%, transparent)",
               }}
             >
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -143,7 +144,7 @@ export default function ShortcutsModal({ isOpen, onClose }: ShortcutsModalProps)
                   margin: 0,
                   fontSize: 17,
                   fontWeight: 800,
-                  color: "#fff",
+                  color: "var(--text)",
                   letterSpacing: "-0.01em",
                 }}
               >
@@ -153,7 +154,7 @@ export default function ShortcutsModal({ isOpen, onClose }: ShortcutsModalProps)
                 style={{
                   margin: 0,
                   fontSize: 11,
-                  color: "rgba(255, 255, 255, 0.5)",
+                  color: "color-mix(in srgb, var(--text) 50%, transparent)",
                 }}
               >
                 Full playback, lyrics sync, and navigation hotkeys
@@ -168,9 +169,9 @@ export default function ShortcutsModal({ isOpen, onClose }: ShortcutsModalProps)
               width: 32,
               height: 32,
               borderRadius: 8,
-              border: "1px solid rgba(255, 255, 255, 0.1)",
-              background: "rgba(255, 255, 255, 0.05)",
-              color: "rgba(255, 255, 255, 0.7)",
+              border: "1px solid color-mix(in srgb, var(--text) 10%, transparent)",
+              background: "color-mix(in srgb, var(--text) 5%, transparent)",
+              color: "color-mix(in srgb, var(--text) 70%, transparent)",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
@@ -178,12 +179,12 @@ export default function ShortcutsModal({ isOpen, onClose }: ShortcutsModalProps)
               transition: "all 0.15s ease",
             }}
             onMouseEnter={(e) => {
-              e.currentTarget.style.backgroundColor = "rgba(255, 255, 255, 0.12)";
-              e.currentTarget.style.color = "#fff";
+              e.currentTarget.style.backgroundColor = "color-mix(in srgb, var(--text) 12%, transparent)";
+              e.currentTarget.style.color = "var(--text)";
             }}
             onMouseLeave={(e) => {
-              e.currentTarget.style.backgroundColor = "rgba(255, 255, 255, 0.05)";
-              e.currentTarget.style.color = "rgba(255, 255, 255, 0.7)";
+              e.currentTarget.style.backgroundColor = "color-mix(in srgb, var(--text) 5%, transparent)";
+              e.currentTarget.style.color = "color-mix(in srgb, var(--text) 70%, transparent)";
             }}
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
@@ -231,9 +232,9 @@ export default function ShortcutsModal({ isOpen, onClose }: ShortcutsModalProps)
 
               <div
                 style={{
-                  backgroundColor: "rgba(255, 255, 255, 0.02)",
+                  backgroundColor: "color-mix(in srgb, var(--text) 2%, transparent)",
                   borderRadius: 14,
-                  border: "1px solid rgba(255, 255, 255, 0.05)",
+                  border: "1px solid color-mix(in srgb, var(--text) 5%, transparent)",
                   overflow: "hidden",
                 }}
               >
@@ -247,14 +248,14 @@ export default function ShortcutsModal({ isOpen, onClose }: ShortcutsModalProps)
                       padding: "10px 16px",
                       borderBottom:
                         sIdx < cat.shortcuts.length - 1
-                          ? "1px solid rgba(255, 255, 255, 0.03)"
+                          ? "1px solid color-mix(in srgb, var(--text) 3%, transparent)"
                           : "none",
                     }}
                   >
                     <span
                       style={{
                         fontSize: 12.5,
-                        color: "rgba(255, 255, 255, 0.8)",
+                        color: "color-mix(in srgb, var(--text) 80%, transparent)",
                         fontWeight: 500,
                       }}
                     >
@@ -272,10 +273,10 @@ export default function ShortcutsModal({ isOpen, onClose }: ShortcutsModalProps)
                               minWidth: 26,
                               height: 24,
                               padding: "0 7px",
-                              backgroundColor: "rgba(255, 255, 255, 0.07)",
-                              border: "1px solid rgba(255, 255, 255, 0.18)",
+                              backgroundColor: "color-mix(in srgb, var(--text) 7%, transparent)",
+                              border: "1px solid color-mix(in srgb, var(--text) 18%, transparent)",
                               borderRadius: 6,
-                              color: "#fff",
+                              color: "var(--text)",
                               fontFamily:
                                 "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
                               fontSize: 11,
@@ -290,7 +291,7 @@ export default function ShortcutsModal({ isOpen, onClose }: ShortcutsModalProps)
                             <span
                               style={{
                                 fontSize: 10,
-                                color: "rgba(255, 255, 255, 0.3)",
+                                color: "color-mix(in srgb, var(--text) 30%, transparent)",
                                 fontWeight: 700,
                               }}
                             >
@@ -311,24 +312,24 @@ export default function ShortcutsModal({ isOpen, onClose }: ShortcutsModalProps)
         <div
           style={{
             padding: "14px 24px",
-            borderTop: "1px solid rgba(255, 255, 255, 0.06)",
+            borderTop: "1px solid color-mix(in srgb, var(--text) 6%, transparent)",
             backgroundColor: "rgba(0, 0, 0, 0.25)",
             display: "flex",
             alignItems: "center",
             justifyContent: "space-between",
           }}
         >
-          <span style={{ fontSize: 11, color: "rgba(255, 255, 255, 0.4)" }}>
-            Tip: Press <kbd style={{ padding: "1px 5px", background: "rgba(255,255,255,0.08)", borderRadius: 4, color: "#fff" }}>?</kbd> anytime to open this cheatsheet.
+          <span style={{ fontSize: 11, color: "color-mix(in srgb, var(--text) 40%, transparent)" }}>
+            Tip: Press <kbd style={{ padding: "1px 5px", background: "color-mix(in srgb, var(--text) 8%, transparent)", borderRadius: 4, color: "var(--text)" }}>?</kbd> anytime to open this cheatsheet.
           </span>
           <button
             onClick={onClose}
             style={{
               padding: "6px 14px",
               borderRadius: 8,
-              background: "#8A2BE2",
+              background: "var(--accent)",
               border: "none",
-              color: "#fff",
+              color: "var(--accent-fg)",
               fontSize: 11,
               fontWeight: 700,
               cursor: "pointer",
@@ -341,3 +342,5 @@ export default function ShortcutsModal({ isOpen, onClose }: ShortcutsModalProps)
     </div>
   );
 }
+
+export default memo(ShortcutsModal);

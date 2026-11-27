@@ -1,0 +1,526 @@
+{
+  "version": 1,
+  "featured": {
+    "spotify": [
+      {
+        "title": "Today's Top Hits",
+        "desc": "The biggest songs worldwide across pop and global charts.",
+        "query": "Today's Top Hits",
+        "url": "https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M",
+        "color": "#1DB954"
+      },
+      {
+        "title": "Global Viral Hits",
+        "desc": "Trending viral audio tracks and streaming sensations.",
+        "query": "Global Viral 50",
+        "url": "https://open.spotify.com/playlist/37i9dQZEVXbLiRSasKsNU9",
+        "color": "#10b981"
+      },
+      {
+        "title": "Rock Classics",
+        "desc": "Timeless guitar solos and anthems from legendary bands.",
+        "query": "Rock Classics",
+        "url": "https://open.spotify.com/playlist/37i9dQZF1DWXRqgorJj26U",
+        "color": "#b91c1c"
+      },
+      {
+        "title": "Pop Rising",
+        "desc": "The next generation of pop superstars and fresh melodies.",
+        "query": "Pop Rising",
+        "url": "https://open.spotify.com/playlist/37i9dQZF1DWUa8ZRTfalHk",
+        "color": "#8A2BE2"
+      }
+    ],
+    "ytmusic": [
+      {
+        "title": "Global Top Music Videos",
+        "desc": "Official music videos and #1 trending hits across YouTube Music.",
+        "query": "Top Global Music Videos Latest Releases",
+        "url": "Top Global Music Videos Latest Releases",
+        "color": "#FF0000"
+      },
+      {
+        "title": "Lofi Beats To Relax / Study",
+        "desc": "Chillhop and soothing lo-fi beats stream for focus and study.",
+        "query": "lofi hip hop radio beats to relax study to",
+        "url": "lofi hip hop radio beats to relax study to",
+        "color": "#6366f1"
+      },
+      {
+        "title": "EDM Festival Hits",
+        "desc": "High-energy festival tracks, mainstage drops, and house beats.",
+        "query": "top edm festival dance hits fresh",
+        "url": "top edm festival dance hits fresh",
+        "color": "#06b6d4"
+      },
+      {
+        "title": "Acoustic Coffeehouse",
+        "desc": "Gentle acoustic guitar melodies, vocals, and soft indie folk.",
+        "query": "acoustic chill coffeehouse hits",
+        "url": "acoustic chill coffeehouse hits",
+        "color": "#d97706"
+      }
+    ],
+    "soundcloud": [
+      {
+        "title": "SoundCloud Chill Electronic",
+        "desc": "Atmospheric downtempo, future bass, and ambient soundscapes.",
+        "query": "sc:chill electronic beats",
+        "url": "sc:chill electronic beats",
+        "color": "#FF5500"
+      },
+      {
+        "title": "Underground Lo-Fi Beats",
+        "desc": "Raw vinyl dust, MPC samples, and late-night underground lo-fi.",
+        "query": "sc:lo-fi underground beats",
+        "url": "sc:lo-fi underground beats",
+        "color": "#f59e0b"
+      },
+      {
+        "title": "SoundCloud Trending Fresh",
+        "desc": "Independent artist releases gaining organic viral traction.",
+        "query": "sc:top trending new tracks",
+        "url": "sc:top trending new tracks",
+        "color": "#ec4899"
+      },
+      {
+        "title": "Indie Discoveries",
+        "desc": "Bedroom pop, indie singer-songwriters, and melodic creations.",
+        "query": "sc:indie acoustic discoveries",
+        "url": "sc:indie acoustic discoveries",
+        "color": "#14b8a6"
+      }
+    ]
+  },
+  "catalog": [
+    {
+      "id": "sp-top-hits",
+      "title": "Today's Top Hits",
+      "desc": "The biggest songs worldwide across pop and global charts.",
+      "provider": "spotify",
+      "category": "charts",
+      "url": "https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M",
+      "color": "#1DB954",
+      "badge": "Spotify #1",
+      "gradient": "linear-gradient(135deg, #1DB954, #0b381a)"
+    },
+    {
+      "id": "sp-global-50",
+      "title": "Top 50 - Global",
+      "desc": "Daily update of the most played tracks worldwide on Spotify.",
+      "provider": "spotify",
+      "category": "charts",
+      "url": "https://open.spotify.com/playlist/37i9dQZEVXbMDoHDwVN2tF",
+      "color": "#1DB954",
+      "badge": "Global Chart",
+      "gradient": "linear-gradient(135deg, #10b981, #064e3b)"
+    },
+    {
+      "id": "sp-usa-50",
+      "title": "Top 50 - USA",
+      "desc": "The most streamed tracks in the United States right now.",
+      "provider": "spotify",
+      "category": "charts",
+      "url": "https://open.spotify.com/playlist/37i9dQZEVXbLRQDuF5jeBp",
+      "color": "#1DB954",
+      "badge": "US Top 50",
+      "gradient": "linear-gradient(135deg, #3b82f6, #1e3a8a)"
+    },
+    {
+      "id": "sp-uk-50",
+      "title": "Top 50 - United Kingdom",
+      "desc": "The official top trending and streamed songs across the UK.",
+      "provider": "spotify",
+      "category": "charts",
+      "url": "https://open.spotify.com/playlist/37i9dQZEVXbLnolsZ8PSNw",
+      "color": "#1DB954",
+      "badge": "UK Chart",
+      "gradient": "linear-gradient(135deg, #6366f1, #312e81)"
+    },
+    {
+      "id": "sp-viral-50",
+      "title": "Viral 50 - Global",
+      "desc": "Trending viral audio tracks, internet sensations, and breakout songs.",
+      "provider": "spotify",
+      "category": "charts",
+      "url": "https://open.spotify.com/playlist/37i9dQZEVXbLiRSasKsNU9",
+      "color": "#10b981",
+      "badge": "Viral Hits",
+      "gradient": "linear-gradient(135deg, #059669, #022c22)"
+    },
+    {
+      "id": "yt-billboard-100",
+      "title": "Billboard Hot 100",
+      "desc": "Top 100 songs across all genres from the official Billboard chart.",
+      "provider": "youtube",
+      "category": "charts",
+      "url": "Billboard Hot 100 Top Songs Official Audio",
+      "color": "#FF0000",
+      "badge": "Billboard",
+      "gradient": "linear-gradient(135deg, #FF0000, #7f1d1d)"
+    },
+    {
+      "id": "yt-top-100-global",
+      "title": "YouTube Music Top 100 Global",
+      "desc": "The most played official music videos and chart-toppers globally.",
+      "provider": "youtube",
+      "category": "charts",
+      "url": "YouTube Music Top 100 Songs Global Chart",
+      "color": "#FF0000",
+      "badge": "YT Charts",
+      "gradient": "linear-gradient(135deg, #dc2626, #450a0a)"
+    },
+    {
+      "id": "yt-trending-music",
+      "title": "Trending Music Hits Worldwide",
+      "desc": "What the world is listening to right now across YouTube Music.",
+      "provider": "youtube",
+      "category": "charts",
+      "url": "Trending Music Hits Worldwide Official",
+      "color": "#FF0000",
+      "badge": "Trending",
+      "gradient": "linear-gradient(135deg, #ef4444, #991b1b)"
+    },
+    {
+      "id": "sp-pop-rising",
+      "title": "Pop Rising",
+      "desc": "The next generation of pop superstars and fresh hook-heavy melodies.",
+      "provider": "spotify",
+      "category": "pop",
+      "url": "https://open.spotify.com/playlist/37i9dQZF1DWUa8ZRTfalHk",
+      "color": "#8A2BE2",
+      "badge": "Pop Superstars",
+      "gradient": "linear-gradient(135deg, #8A2BE2, #4A0E4E)"
+    },
+    {
+      "id": "sp-mega-hit-mix",
+      "title": "Mega Hit Mix",
+      "desc": "A mega blend of the decade's biggest pop anthems and radio staples.",
+      "provider": "spotify",
+      "category": "pop",
+      "url": "https://open.spotify.com/playlist/37i9dQZF1DXbYM3nMM0oPk",
+      "color": "#ec4899",
+      "badge": "Mega Pop",
+      "gradient": "linear-gradient(135deg, #ec4899, #831843)"
+    },
+    {
+      "id": "sp-hit-rewind",
+      "title": "Hit Rewind",
+      "desc": "Modern pop classics and unforgettable sing-along favorites.",
+      "provider": "spotify",
+      "category": "pop",
+      "url": "https://open.spotify.com/playlist/37i9dQZF1DX0s5k0059x7W",
+      "color": "#f43f5e",
+      "badge": "Pop Rewind",
+      "gradient": "linear-gradient(135deg, #f43f5e, #881337)"
+    },
+    {
+      "id": "yt-pop-hits-latest",
+      "title": "Today's Top Pop Hits",
+      "desc": "Non-stop top 40 pop hits and infectious danceable singles.",
+      "provider": "youtube",
+      "category": "pop",
+      "url": "Top 40 Pop Hits Official Audio Today",
+      "color": "#FF0000",
+      "badge": "Pop Hits",
+      "gradient": "linear-gradient(135deg, #e11d48, #4c0519)"
+    },
+    {
+      "id": "sp-rapcaviar",
+      "title": "RapCaviar",
+      "desc": "The heavyweight hip-hop playlist featuring Kendrick, Drake, Future.",
+      "provider": "spotify",
+      "category": "hiphop",
+      "url": "https://open.spotify.com/playlist/37i9dQZF1DX0XUsuxWHRQd",
+      "color": "#f59e0b",
+      "badge": "Rap Royalty",
+      "gradient": "linear-gradient(135deg, #f59e0b, #78350f)"
+    },
+    {
+      "id": "sp-get-turnt",
+      "title": "Get Turnt",
+      "desc": "High-octane trap anthems, heavy basslines, and energy bangers.",
+      "provider": "spotify",
+      "category": "hiphop",
+      "url": "https://open.spotify.com/playlist/37i9dQZF1DWY4xHQp97NaN",
+      "color": "#d97706",
+      "badge": "Trap Heavy",
+      "gradient": "linear-gradient(135deg, #d97706, #451a03)"
+    },
+    {
+      "id": "sp-are-and-be",
+      "title": "Are & Be (R&B Hits)",
+      "desc": "Smooth modern R&B, soul vocal harmonies, and late-night grooves.",
+      "provider": "spotify",
+      "category": "hiphop",
+      "url": "https://open.spotify.com/playlist/37i9dQZF1DX4SBhb3fqAp5",
+      "color": "#8b5cf6",
+      "badge": "R&B Soul",
+      "gradient": "linear-gradient(135deg, #8b5cf6, #4c1d95)"
+    },
+    {
+      "id": "yt-hiphop-trap",
+      "title": "Hip Hop & Trap Bangers",
+      "desc": "Hard-hitting 808s, iconic verses, and chart-dominating street heat.",
+      "provider": "youtube",
+      "category": "hiphop",
+      "url": "Top Hip Hop and Trap Hits Official Audio Latest",
+      "color": "#FF0000",
+      "badge": "Trap Heat",
+      "gradient": "linear-gradient(135deg, #b45309, #292524)"
+    },
+    {
+      "id": "sp-rock-classics",
+      "title": "Rock Classics",
+      "desc": "Timeless guitar solos and anthems from Queen, AC/DC, and Zeppelin.",
+      "provider": "spotify",
+      "category": "rock",
+      "url": "https://open.spotify.com/playlist/37i9dQZF1DWXRqgorJj26U",
+      "color": "#b91c1c",
+      "badge": "Rock Legends",
+      "gradient": "linear-gradient(135deg, #b91c1c, #450a0a)"
+    },
+    {
+      "id": "sp-rock-this",
+      "title": "Rock This",
+      "desc": "The absolute best new alternative rock, grunge, and indie rock.",
+      "provider": "spotify",
+      "category": "rock",
+      "url": "https://open.spotify.com/playlist/37i9dQZF1DX82GYcclJ3Ug",
+      "color": "#c026d3",
+      "badge": "Alt Rock",
+      "gradient": "linear-gradient(135deg, #c026d3, #701a75)"
+    },
+    {
+      "id": "sp-alternative-90s",
+      "title": "Alternative 90s",
+      "desc": "Nirvana, Pearl Jam, Oasis, Radiohead, and the grunge revolution.",
+      "provider": "spotify",
+      "category": "rock",
+      "url": "https://open.spotify.com/playlist/37i9dQZF1DX1rVvRgjXZwF",
+      "color": "#0284c7",
+      "badge": "90s Alt",
+      "gradient": "linear-gradient(135deg, #0284c7, #082f49)"
+    },
+    {
+      "id": "yt-rock-legends",
+      "title": "Best Rock Songs Of All Time",
+      "desc": "Classic guitar riffs, soaring vocals, and immortal stadium rock.",
+      "provider": "youtube",
+      "category": "rock",
+      "url": "Best Classic Rock Songs Of All Time Official Audio",
+      "color": "#FF0000",
+      "badge": "Immortal Rock",
+      "gradient": "linear-gradient(135deg, #991b1b, #18181b)"
+    },
+    {
+      "id": "sp-mint-edm",
+      "title": "mint - EDM Hits",
+      "desc": "World's biggest electronic, house, and festival dance anthems.",
+      "provider": "spotify",
+      "category": "edm",
+      "url": "https://open.spotify.com/playlist/37i9dQZF1DX4dyzvuaRJ0n",
+      "color": "#06b6d4",
+      "badge": "Festival EDM",
+      "gradient": "linear-gradient(135deg, #06b6d4, #083344)"
+    },
+    {
+      "id": "sp-beast-mode",
+      "title": "Beast Mode EDM",
+      "desc": "Maximum energy EDM, hard bass, and workout adrenaline.",
+      "provider": "spotify",
+      "category": "edm",
+      "url": "https://open.spotify.com/playlist/37i9dQZF1DX76Wlfdnj7AP",
+      "color": "#e11d48",
+      "badge": "Gym EDM",
+      "gradient": "linear-gradient(135deg, #e11d48, #4c0519)"
+    },
+    {
+      "id": "sp-dance-pop",
+      "title": "Dance Pop Hits",
+      "desc": "Club-ready dance pop anthems and peak-time party tracks.",
+      "provider": "spotify",
+      "category": "edm",
+      "url": "https://open.spotify.com/playlist/37i9dQZF1DX2enYKN9Jy85",
+      "color": "#14b8a6",
+      "badge": "Dance Pop",
+      "gradient": "linear-gradient(135deg, #14b8a6, #134e4a)"
+    },
+    {
+      "id": "yt-edm-festival",
+      "title": "EDM Festival Mega Mix",
+      "desc": "Tomorrowland mainstage drops, progressive house, and electrifying beats.",
+      "provider": "youtube",
+      "category": "edm",
+      "url": "top edm festival dance hits fresh releases",
+      "color": "#FF0000",
+      "badge": "Mainstage",
+      "gradient": "linear-gradient(135deg, #0284c7, #00F0FF)"
+    },
+    {
+      "id": "yt-gaming-ncs",
+      "title": "Gaming NCS Music Mix",
+      "desc": "Epic electronic gaming beats, dubstep drops, and synth anthems.",
+      "provider": "youtube",
+      "category": "edm",
+      "url": "Best Gaming Music NCS Electronic Trap Dubstep",
+      "color": "#FF0000",
+      "badge": "Gaming Beats",
+      "gradient": "linear-gradient(135deg, #7c3aed, #00F0FF)"
+    },
+    {
+      "id": "sp-deep-focus",
+      "title": "Deep Focus",
+      "desc": "Atmospheric ambient soundscapes and post-rock for deep concentration.",
+      "provider": "spotify",
+      "category": "chill",
+      "url": "https://open.spotify.com/playlist/37i9dQZF1DWZeKCadgRdKQ",
+      "color": "#059669",
+      "badge": "Deep Focus",
+      "gradient": "linear-gradient(135deg, #059669, #022c22)"
+    },
+    {
+      "id": "sp-lofi-cafe",
+      "title": "Lo-Fi Cafe",
+      "desc": "Warm vinyl dust, cozy coffeehouse instrumental beats and soft jazz.",
+      "provider": "spotify",
+      "category": "chill",
+      "url": "https://open.spotify.com/playlist/37i9dQZF1DXdLEN7aqioXM",
+      "color": "#d97706",
+      "badge": "Lo-Fi Beats",
+      "gradient": "linear-gradient(135deg, #d97706, #451a03)"
+    },
+    {
+      "id": "sp-peaceful-piano",
+      "title": "Peaceful Piano",
+      "desc": "Delicate and calming acoustic piano melodies for study and sleep.",
+      "provider": "spotify",
+      "category": "chill",
+      "url": "https://open.spotify.com/playlist/37i9dQZF1DX4sWSpwq3LiO",
+      "color": "#475569",
+      "badge": "Piano Calm",
+      "gradient": "linear-gradient(135deg, #475569, #0f172a)"
+    },
+    {
+      "id": "yt-lofi-beats",
+      "title": "Lofi Beats To Relax / Study",
+      "desc": "Chillhop and soothing lo-fi beats stream for focus, study, and coding.",
+      "provider": "youtube",
+      "category": "chill",
+      "url": "lofi hip hop radio beats to relax study to",
+      "color": "#6366f1",
+      "badge": "Lofi Radio",
+      "gradient": "linear-gradient(135deg, #6366f1, #312e81)"
+    },
+    {
+      "id": "yt-synthwave-chill",
+      "title": "Synthwave Retro 80s Chill",
+      "desc": "Outrun neon vibes, retro synths, and driving midnight electronic cruising.",
+      "provider": "youtube",
+      "category": "chill",
+      "url": "Synthwave Chill 80s Retro Electronic Beats",
+      "color": "#ec4899",
+      "badge": "Synthwave",
+      "gradient": "linear-gradient(135deg, #ec4899, #70003C)"
+    },
+    {
+      "id": "yt-coffeehouse",
+      "title": "Acoustic Coffeehouse Hits",
+      "desc": "Gentle acoustic guitar melodies, vocals, and soft indie folk.",
+      "provider": "youtube",
+      "category": "chill",
+      "url": "acoustic chill coffeehouse hits",
+      "color": "#d97706",
+      "badge": "Acoustic",
+      "gradient": "linear-gradient(135deg, #d97706, #5A2A00)"
+    },
+    {
+      "id": "sp-viva-latino",
+      "title": "Viva Latino",
+      "desc": "Today's hottest Latin hits, reggaeton, and tropical rhythms.",
+      "provider": "spotify",
+      "category": "latin",
+      "url": "https://open.spotify.com/playlist/37i9dQZF1DX10zKzsJ2jva",
+      "color": "#eab308",
+      "badge": "Viva Latino",
+      "gradient": "linear-gradient(135deg, #eab308, #713f12)"
+    },
+    {
+      "id": "sp-baila-reggaeton",
+      "title": "Baila Reggaeton",
+      "desc": "Danceable Latin party tracks, dembow beats, and summer anthems.",
+      "provider": "spotify",
+      "category": "latin",
+      "url": "https://open.spotify.com/playlist/37i9dQZF1DX186v583rmzp",
+      "color": "#f97316",
+      "badge": "Reggaeton",
+      "gradient": "linear-gradient(135deg, #f97316, #7c2d12)"
+    },
+    {
+      "id": "yt-latin-hits",
+      "title": "Top Latin & Reggaeton Hits",
+      "desc": "Bad Bunny, Karol G, Feid, and the biggest Latin chart-toppers.",
+      "provider": "youtube",
+      "category": "latin",
+      "url": "Top Latin Reggaeton Hits Official Audio Latest",
+      "color": "#FF0000",
+      "badge": "Latin Party",
+      "gradient": "linear-gradient(135deg, #ea580c, #431407)"
+    },
+    {
+      "id": "sp-all-out-80s",
+      "title": "All Out 80s",
+      "desc": "Synthpop, new wave, pop anthems, and hair metal from the 1980s.",
+      "provider": "spotify",
+      "category": "decades",
+      "url": "https://open.spotify.com/playlist/37i9dQZF1DX4UtSsGT1Sbe",
+      "color": "#a855f7",
+      "badge": "80s Retro",
+      "gradient": "linear-gradient(135deg, #a855f7, #581c87)"
+    },
+    {
+      "id": "sp-all-out-90s",
+      "title": "All Out 90s",
+      "desc": "Eurodance, grunge, Britpop, and nostalgic classics from the 1990s.",
+      "provider": "spotify",
+      "category": "decades",
+      "url": "https://open.spotify.com/playlist/37i9dQZF1DXbTxeAdrVG2l",
+      "color": "#3b82f6",
+      "badge": "90s Nostalgia",
+      "gradient": "linear-gradient(135deg, #3b82f6, #1e3a8a)"
+    },
+    {
+      "id": "sp-all-out-2000s",
+      "title": "All Out 2000s",
+      "desc": "Y2K pop, emo rock, early hip-hop, and defining millennium tracks.",
+      "provider": "spotify",
+      "category": "decades",
+      "url": "https://open.spotify.com/playlist/37i9dQZF1DX4o1oenSJRJd",
+      "color": "#06b6d4",
+      "badge": "2000s Y2K",
+      "gradient": "linear-gradient(135deg, #06b6d4, #164e63)"
+    },
+    {
+      "id": "sp-all-out-2010s",
+      "title": "All Out 2010s",
+      "desc": "The monumental tracks that defined the streaming decade.",
+      "provider": "spotify",
+      "category": "decades",
+      "url": "https://open.spotify.com/playlist/37i9dQZF1DX5Ejj0EkURtP",
+      "color": "#10b981",
+      "badge": "2010s Hits",
+      "gradient": "linear-gradient(135deg, #10b981, #064e3b)"
+    },
+    {
+      "id": "yt-nostalgia-mix",
+      "title": "90s & 2000s Nostalgia Mix",
+      "desc": "Golden era throwback mix of iconic pop, alternative, and rock.",
+      "provider": "youtube",
+      "category": "decades",
+      "url": "90s 2000s Pop and Rock Hits Nostalgia Mix",
+      "color": "#FF0000",
+      "badge": "Throwback",
+      "gradient": "linear-gradient(135deg, #8b5cf6, #3730a3)"
+    }
+  ]
+}

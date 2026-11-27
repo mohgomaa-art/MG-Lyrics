@@ -1,0 +1,53 @@
+name: Release (Windows)
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Download and verify yt-dlp.exe
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force src-tauri/bin | Out-Null
+          $base = 'https://github.com/yt-dlp/yt-dlp/releases/latest/download'
+          Invoke-WebRequest "$base/yt-dlp.exe" -OutFile src-tauri/bin/yt-dlp.exe
+          Invoke-WebRequest "$base/SHA2-256SUMS" -OutFile sums.txt
+          $line = Get-Content sums.txt | Where-Object { $_ -match '\s\*?yt-dlp\.exe$' } | Select-Object -First 1
+          if (-not $line) { throw 'No checksum line for yt-dlp.exe' }
+          $expected = ($line -split '\s+')[0].ToLower()
+          $actual = (Get-FileHash src-tauri/bin/yt-dlp.exe -Algorithm SHA256).Hash.ToLower()
+          if ($expected -ne $actual) { throw "yt-dlp checksum mismatch: $expected vs $actual" }
+          Write-Host 'yt-dlp checksum OK'
+
+      - run: npm ci
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_type == 'tag' && github.ref_name || 'v__VERSION__' }}
+          releaseName: 'MG Lyrics Player v__VERSION__'
+          releaseBody: 'Windows installer (NSIS). Run the setup .exe to install.'
+          releaseDraft: false
+          prerelease: false
+          args: --bundles nsis

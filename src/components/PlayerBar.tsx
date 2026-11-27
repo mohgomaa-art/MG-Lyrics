@@ -30,7 +30,7 @@ export default function PlayerBar({
   onSeek,
   lyricsPinned = true,
   onTogglePin = () => {},
-  lyricsTheme = "nebula",
+  lyricsTheme = "classic",
   onChangeTheme = () => {},
   volume = 0.8,
   onVolumeChange = () => {},
@@ -115,19 +115,19 @@ export default function PlayerBar({
   const pct = track.duration > 0 ? (progress / track.duration) * 100 : 0;
 
   return (
-    <div className="h-22 bg-[#0C0C12]/80 backdrop-blur-xl border-t border-white/5 flex items-center justify-between px-6 select-none z-10 relative"
+    <div className="h-22 bg-[var(--bg)]/80 backdrop-blur-xl border-t border-[color-mix(in_srgb,var(--text)_5%,transparent)] flex items-center justify-between px-6 select-none z-10 relative"
       style={{ animation: "slide-up 0.3s ease-out" }}>
       
       {/* Current Track Info */}
       <div className="flex items-center gap-4 w-64 min-w-0">
         <div className="relative shrink-0">
           <div
-            className={`w-12 h-12 rounded-xl bg-cover bg-center border border-white/5 shadow-md shadow-black/20 transition-transform duration-300
+            className={`w-12 h-12 rounded-xl bg-cover bg-center border border-[color-mix(in_srgb,var(--text)_5%,transparent)] shadow-md shadow-black/20 transition-transform duration-300
               ${isPlaying ? "scale-105 border-accent/40" : ""}`}
             style={{ backgroundImage: `url(${track.cover})` }}
           />
           {isPlaying && (
-            <div className="absolute -top-1 -right-1 flex items-end gap-[2px] h-3.5 bg-black/60 px-1 py-0.5 rounded-md border border-white/5">
+            <div className="absolute -top-1 -right-1 flex items-end gap-[2px] h-3.5 bg-[var(--bg)] px-1 py-0.5 rounded-md border border-[color-mix(in_srgb,var(--text)_5%,transparent)]">
               {[0, 1, 2].map((i) => (
                 <div
                   key={i}
@@ -143,7 +143,7 @@ export default function PlayerBar({
         </div>
         
         <div className="min-w-0 text-left">
-          <p className="text-sm font-bold text-white truncate">{track.title}</p>
+          <p className="text-sm font-bold text-[var(--text)] truncate">{track.title}</p>
           <div className="flex items-center gap-1.5 mt-0.5">
             <span
               style={{
@@ -160,7 +160,7 @@ export default function PlayerBar({
                     ? "rgba(255, 0, 0, 0.2)"
                     : track.source === "soundcloud"
                     ? "rgba(255, 85, 0, 0.2)"
-                    : "rgba(138, 43, 226, 0.2)",
+                    : "color-mix(in srgb, var(--accent) 20%, transparent)",
                 color:
                   track.source === "spotify"
                     ? "#1DB954"
@@ -168,15 +168,15 @@ export default function PlayerBar({
                     ? "#FF4444"
                     : track.source === "soundcloud"
                     ? "#FF5500"
-                    : "#8A2BE2",
+                    : "var(--accent)",
                 border: `1px solid ${
                   track.source === "spotify"
-                    ? "rgba(29, 185, 84, 0.3)"
+                    ? "color-mix(in srgb, var(--accent) 30%, transparent)"
                     : track.source === "youtube"
                     ? "rgba(255, 0, 0, 0.3)"
                     : track.source === "soundcloud"
                     ? "rgba(255, 85, 0, 0.3)"
-                    : "rgba(138, 43, 226, 0.3)"
+                    : "color-mix(in srgb, var(--accent) 30%, transparent)"
                 }`,
               }}
             >
@@ -185,7 +185,7 @@ export default function PlayerBar({
             <span className="text-xs text-text-secondary truncate font-semibold">{track.artist}</span>
           </div>
           {playbackError && (
-            <p className="text-[10px] text-red-400 truncate mt-0.5 font-semibold">{playbackError}</p>
+            <p className="text-[10px] text-[var(--danger)] truncate mt-0.5 font-semibold">{playbackError}</p>
           )}
         </div>
       </div>
@@ -196,7 +196,7 @@ export default function PlayerBar({
         <div className="flex items-center gap-6">
           <button 
             onClick={onPrev} 
-            className="text-text-secondary hover:text-white hover:scale-110 active:scale-95 transition-all cursor-pointer p-1"
+            className="text-text-secondary hover:text-[var(--text)] hover:scale-110 active:scale-95 transition-all cursor-pointer p-1"
             title="Previous Track"
           >
             <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
@@ -206,8 +206,8 @@ export default function PlayerBar({
 
           <button
             onClick={onPlayPause}
-            className={`w-10 h-10 rounded-full bg-white flex items-center justify-center text-black hover:scale-108 active:scale-95 transition-all cursor-pointer shadow-lg
-              ${isPlaying ? "animate-pulse-glow bg-accent text-white" : ""}`}
+            className={`w-10 h-10 rounded-full bg-[var(--accent)] flex items-center justify-center text-[var(--accent-fg)] hover:scale-105 active:scale-95 transition-all cursor-pointer shadow-lg
+              ${isPlaying ? "animate-pulse-glow bg-accent text-[var(--text)]" : ""}`}
             title={isPlaying ? "Pause" : "Play"}
           >
             {isPlaying ? (
@@ -224,7 +224,7 @@ export default function PlayerBar({
 
           <button 
             onClick={onNext} 
-            className="text-text-secondary hover:text-white hover:scale-110 active:scale-95 transition-all cursor-pointer p-1"
+            className="text-text-secondary hover:text-[var(--text)] hover:scale-110 active:scale-95 transition-all cursor-pointer p-1"
             title="Next Track"
           >
             <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
@@ -239,7 +239,7 @@ export default function PlayerBar({
           
           <div
             ref={barRef}
-            className="flex-1 h-1.5 bg-white/5 rounded-full cursor-pointer relative group"
+            className="flex-1 h-1.5 bg-[color-mix(in_srgb,var(--text)_5%,transparent)] rounded-full cursor-pointer relative group"
             onClick={handleSeek}
             onMouseDown={() => setDragging(true)}
             onMouseUp={() => setDragging(false)}
@@ -250,7 +250,7 @@ export default function PlayerBar({
               style={{ width: `${pct}%` }}
             >
               {/* Glow light bulb indicator */}
-              <div className="absolute right-[-6px] top-1/2 -translate-y-1/2 w-3.5 h-3.5 rounded-full bg-white shadow-lg shadow-accent opacity-0 group-hover:opacity-100 transition-opacity duration-150 border border-accent/20 cursor-pointer" />
+              <div className="absolute right-[-6px] top-1/2 -translate-y-1/2 w-3.5 h-3.5 rounded-full bg-[var(--accent)] shadow-lg opacity-0 group-hover:opacity-100 transition-opacity duration-150 border border-accent/20 cursor-pointer" />
             </div>
           </div>
           
@@ -264,7 +264,7 @@ export default function PlayerBar({
         <div className="flex items-center gap-2 mr-3 group/vol">
           <button 
             onClick={toggleMute}
-            className="text-text-secondary hover:text-white transition-colors cursor-pointer p-1"
+            className="text-text-secondary hover:text-[var(--text)] transition-colors cursor-pointer p-1"
             title={volume === 0 ? "Unmute" : "Mute"}
           >
             {renderSpeakerIcon()}
@@ -277,7 +277,7 @@ export default function PlayerBar({
             step="0.01"
             value={volume}
             onChange={(e) => onVolumeChange(parseFloat(e.target.value))}
-            className="w-16 h-1 bg-white/10 rounded accent-accent cursor-pointer group-hover/vol:w-20 transition-all duration-300"
+            className="w-16 h-1 bg-[color-mix(in_srgb,var(--text)_10%,transparent)] rounded accent-accent cursor-pointer group-hover/vol:w-20 transition-all duration-300"
             style={{ outline: "none" }}
             title={`Volume: ${Math.round(volume * 100)}%`}
           />
@@ -290,20 +290,14 @@ export default function PlayerBar({
             <select
               value={lyricsTheme}
               onChange={(e) => onChangeTheme(e.target.value)}
-              className="bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl px-2 py-2 text-[11px] font-bold text-text-secondary hover:text-white cursor-pointer outline-none transition-all"
+              className="bg-[color-mix(in_srgb,var(--text)_5%,transparent)] hover:bg-[color-mix(in_srgb,var(--text)_10%,transparent)] border border-[color-mix(in_srgb,var(--text)_10%,transparent)] rounded-xl px-2 py-2 text-[11px] font-bold text-text-secondary hover:text-[var(--text)] cursor-pointer outline-none transition-all"
               title="Select Lyrics Theme"
               style={{ height: "36px" }}
             >
-              <option value="nebula" className="bg-[#0C0C12] text-white">Nebula Purple</option>
-              <option value="cyberpunk" className="bg-[#0C0C12] text-white">Cyberpunk Cyan</option>
-              <option value="terminal" className="bg-[#0C0C12] text-white">Amber Terminal</option>
-              <option value="elegant" className="bg-[#0C0C12] text-white">Elegant Serif</option>
-              <option value="minimal" className="bg-[#0C0C12] text-white">Minimalist White</option>
-              <option value="emerald" className="bg-[#0C0C12] text-white">Emerald Forest</option>
-              <option value="sunset" className="bg-[#0C0C12] text-white">Sunset Horizon</option>
-              <option value="synthwave" className="bg-[#0C0C12] text-white">Synthwave 80s</option>
-              <option value="nordic" className="bg-[#0C0C12] text-white">Nordic Ice</option>
-              <option value="tokyo" className="bg-[#0C0C12] text-white">Tokyo Electric</option>
+              <option value="classic" className="bg-[var(--bg)] text-[var(--text)]">Classic White</option>
+              <option value="inverse" className="bg-[var(--bg)] text-[var(--text)]">Inverse Black</option>
+              <option value="serif" className="bg-[var(--bg)] text-[var(--text)]">Serif</option>
+              <option value="mono" className="bg-[var(--bg)] text-[var(--text)]">Mono</option>
             </select>
 
             {/* Lock/Unlock Toggle Button */}
@@ -311,8 +305,8 @@ export default function PlayerBar({
               onClick={onTogglePin}
               className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-[11px] font-bold transition-all duration-200 cursor-pointer border ${
                 lyricsPinned
-                  ? "bg-rose-500/10 border-rose-500/20 text-rose-400 hover:bg-rose-500/20"
-                  : "bg-green-500/10 border-green-500/20 text-green-400 hover:bg-green-500/20"
+                  ? "bg-[var(--surface-2)] border-[var(--border)] text-[var(--text-2)] hover:text-[var(--text)]"
+                  : "bg-[var(--accent)] border-[var(--accent)] text-[var(--accent-fg)]"
               }`}
               title={lyricsPinned ? "Click to unlock window (allows dragging and resizing)" : "Click to lock window (makes it click-through)"}
               style={{ height: "36px" }}
@@ -343,8 +337,8 @@ export default function PlayerBar({
           onClick={onToggleLyrics}
           className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold transition-all duration-200 cursor-pointer border
             ${lyricsVisible
-              ? "bg-accent/15 border-accent text-accent shadow-md shadow-accent-glow/10 font-black"
-              : "bg-white/5 border-white/10 text-text-secondary hover:text-white hover:bg-white/10"
+              ? "bg-accent/15 border-accent text-accent shadow-md  font-black"
+              : "bg-[color-mix(in_srgb,var(--text)_5%,transparent)] border-[color-mix(in_srgb,var(--text)_10%,transparent)] text-text-secondary hover:text-[var(--text)] hover:bg-[color-mix(in_srgb,var(--text)_10%,transparent)]"
             }`}
           title="Toggle Lyrics Panel (Press L)"
           style={{ height: "36px" }}
@@ -361,7 +355,7 @@ export default function PlayerBar({
         {onOpenShortcuts && (
           <button
             onClick={onOpenShortcuts}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold transition-all duration-200 cursor-pointer border bg-white/5 border-white/10 text-text-secondary hover:text-white hover:bg-white/10"
+            className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold transition-all duration-200 cursor-pointer border bg-[color-mix(in_srgb,var(--text)_5%,transparent)] border-[color-mix(in_srgb,var(--text)_10%,transparent)] text-text-secondary hover:text-[var(--text)] hover:bg-[color-mix(in_srgb,var(--text)_10%,transparent)]"
             title="Keyboard Shortcuts Cheatsheet (Press ?)"
             style={{ height: "36px" }}
           >

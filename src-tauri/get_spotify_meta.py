@@ -1,3 +1,4 @@
+import os
 import sys
 import urllib.request
 import re
@@ -9,8 +10,8 @@ def main():
         return
     url = sys.argv[1]
     try:
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
-        with urllib.request.urlopen(req, timeout=10) as response:
+        req = urllib.request.Request(url, headers={'User-Agent': os.environ.get('MG_LYRICS_BROWSER_UA', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)')})
+        with urllib.request.urlopen(req, timeout=float(os.environ.get('MG_LYRICS_HTTP_TIMEOUT_SECS', '10'))) as response:
             html = response.read().decode('utf-8')
         
         title_match = re.search(r'<meta property="og:title" content="([^"]+)"', html) or re.search(r'<title>([^<]+)</title>', html)

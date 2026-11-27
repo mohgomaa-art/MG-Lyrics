@@ -68,6 +68,19 @@ if "!NEED_DOWNLOAD!"=="1" (
     )
 )
 
+if "!NEED_DOWNLOAD!"=="1" (
+    echo        Verifying yt-dlp.exe against the official SHA2-256SUMS...
+    curl.exe -sL -o "%TEMP%\yt-dlp-SHA2-256SUMS" "https://github.com/yt-dlp/yt-dlp/releases/latest/download/SHA2-256SUMS"
+    set "EXPECTED="
+    for /f "tokens=1,2" %%A in ('findstr /e /c:" yt-dlp.exe" "%TEMP%\yt-dlp-SHA2-256SUMS"') do set "EXPECTED=%%A"
+    set "ACTUAL="
+    for /f "skip=1 tokens=*" %%H in ('certutil -hashfile "%YTDLP_BIN%" SHA256') do if not defined ACTUAL set "ACTUAL=%%H"
+    set "ACTUAL=!ACTUAL: =!"
+    if not defined EXPECTED (echo [ERROR] Could not fetch the official checksum. & del "%YTDLP_BIN%" & pause & exit /b 1)
+    if /i not "!EXPECTED!"=="!ACTUAL!" (echo [ERROR] yt-dlp.exe checksum mismatch - deleted. & del "%YTDLP_BIN%" & pause & exit /b 1)
+    echo        Checksum OK.
+)
+
 if not exist "%YTDLP_BIN%" (
     echo [ERROR] Failed to acquire yt-dlp.exe.
     pause

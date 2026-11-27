@@ -12,13 +12,14 @@ import {
   safeGetWebviewWindow,
   isTauriApp,
 } from "./utils/tauriBridge";
-import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { openOverlayWindow, closeOverlayWindow } from "./utils/overlayWindow";
 import type { LyricLine } from "./utils/lyrics";
 import type { MGProvider } from "./types/track";
+import { STORAGE_KEYS } from "./config";
 
 const GRADIENTS = [
-  "#8A2BE2,#4A0E4E", "#FF007F,#70003C", "#00F0FF,#004E7C", "#1DB954,#0B4E22",
-  "#FF8C00,#5A2A00", "#FF4500,#4E1400", "#8A2BE2,#00F0FF", "#FF007F,#00F0FF",
+  "#3a3a3a,#141414", "#2e2e2e,#0f0f0f", "#444444,#1a1a1a", "#333333,#111111",
+  "#3d3d3d,#161616", "#2a2a2a,#0c0c0c", "#484848,#1c1c1c", "#353535,#121212",
 ];
 
 function makeCover(idx: number, title: string): string {
@@ -49,7 +50,7 @@ export default function App() {
   const [activeView,  setActiveView]  = useState("home");
   const [playlists,   setPlaylists]   = useState<Playlist[]>(() => {
     try {
-      const saved = localStorage.getItem("mg_playlists");
+      const saved = localStorage.getItem(STORAGE_KEYS.playlists);
       if (saved) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed) && parsed.length > 0) {
@@ -89,60 +90,50 @@ export default function App() {
     }));
   };
 
-  const [allTracks, setAllTracks] = useState<Track[]>(() => {
+  // Parse the saved library once (it used to be JSON.parsed twice at startup)
+  const [initialSaved] = useState<Track[]>(() => {
     try {
-      const saved = localStorage.getItem("mg_saved_tracks");
+      const saved = localStorage.getItem(STORAGE_KEYS.savedTracks);
       if (saved) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          const realTracks = parsed
+          return parsed
             .filter((t: any) => !t.audioUrl?.includes("soundhelix.com") && !t.id?.match(/^[1-9]$|^10$/))
             .map((t: any) => ({
               ...t,
               audioUrl: t.audioUrl?.includes("googlevideo.com") ? undefined : t.audioUrl,
             }));
-          return realTracks;
         }
       }
     } catch {}
     return [];
   });
+  const [allTracks, setAllTracks] = useState<Track[]>(initialSaved);
 
-  const [currentTrack, setCurrentTrack] = useState<Track | null>(() => {
-    try {
-      const saved = localStorage.getItem("mg_saved_tracks");
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          const realTracks = parsed
-            .filter((t: any) => !t.audioUrl?.includes("soundhelix.com") && !t.id?.match(/^[1-9]$|^10$/))
-            .map((t: any) => ({
-              ...t,
-              audioUrl: t.audioUrl?.includes("googlevideo.com") ? undefined : t.audioUrl,
-            }));
-          if (realTracks.length > 0) return realTracks[0];
-        }
-      }
-    } catch {}
-    return null;
-  });
+  const [currentTrack, setCurrentTrack] = useState<Track | null>(() => initialSaved[0] ?? null);
 
   const [isPlaying,    setIsPlaying]   = useState(false);
   const [progress,     setProgress]    = useState(0);
   const [lyricsWinOpen, setLyricsWinOpen] = useState(false);
   const [lyricsPinned, setLyricsPinned] = useState(true);
-  const [lyricsTheme, setLyricsTheme] = useState("nebula");
+  const [lyricsTheme, setLyricsTheme] = useState("classic");
   const [showShortcutsModal, setShowShortcutsModal] = useState(false);
 
   // Volume state (default to 0.8)
   const [volume, setVolume] = useState(() => {
-    const saved = localStorage.getItem("mg_volume");
-    return saved ? parseFloat(saved) : 0.8;
+    const saved = localStorage.getItem(STORAGE_KEYS.volume);
+    const v = saved ? parseFloat(saved) : NaN;
+    // Clamp to the valid HTMLAudioElement range; a corrupt stored value would throw on assignment
+    return Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 0.8;
   });
 
   // Lyrics state
   const [currentLyrics, setCurrentLyrics] = useState<LyricLine[] | null>(null);
   const currentLyricsRef = useRef<LyricLine[] | null>(null);
+  // Bumped whenever the lyrics list changes, so the overlay can tell a real
+  // change from a heartbeat that carries no lyrics payload.
+  const lyricsVersionRef = useRef(0);
+  const syncSeqRef = useRef(0);
 
   // Playback error state
   const [playbackError, setPlaybackError] = useState<string | null>(null);
@@ -153,9 +144,13 @@ export default function App() {
   const currentTrackRef = useRef<Track | null>(null);
   const isPlayingRef    = useRef(false);
   const lastEmitRef     = useRef(0);
+  const lyricsTrackIdRef = useRef<string | null>(null);
   const retryCountRef   = useRef(0);
   const prevVolumeRef   = useRef(0.8);
   const allTracksRef    = useRef(allTracks);
+  const lyricsPinnedRef = useRef(true);
+  const lyricsThemeRef  = useRef("nebula");
+  const errorTokenRef   = useRef(0);
 
   // In-memory stream cache to avoid re-resolving streams repeatedly (TTL: 2 hours)
   const streamCacheRef = useRef<Map<string, { url: string; timestamp: number }>>(new Map());
@@ -166,6 +161,17 @@ export default function App() {
   // Continuous playback position tracking to survive stream reconnections/refreshes
   const lastKnownTimeRef = useRef<number>(0);
   const stallTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Pending auto-skip timer, tracked so it can be cancelled when the user changes tracks first
+  const skipTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Consecutive auto-skips: stops the failure cascade when every track fails (e.g. YouTube bot wall)
+  const consecutiveSkipsRef = useRef(0);
+  // In-flight stream resolutions, keyed like streamCacheRef, so the next-track prefetch and an
+  // actual track switch share one yt-dlp run instead of racing two duplicates
+  const resolveInFlightRef = useRef<Map<string, Promise<string>>>(new Map());
+  // Last stream-resolution failure detail, surfaced in the player UI instead of being swallowed
+  const streamResolveErrorRef = useRef<string | null>(null);
+  // Reentrancy guard so the error event and a rejected play() promise don't both trigger a refresh
+  const refreshInFlightRef = useRef(false);
 
   useEffect(() => { allTracksRef.current = allTracks; }, [allTracks]);
 
@@ -174,7 +180,7 @@ export default function App() {
     if (audioRef.current) {
       audioRef.current.volume = volume;
     }
-    localStorage.setItem("mg_volume", volume.toString());
+    localStorage.setItem(STORAGE_KEYS.volume, volume.toString());
   }, [volume]);
 
   // Auto-scan download folder on startup to load downloaded tracks
@@ -211,22 +217,71 @@ export default function App() {
   useEffect(() => { isPlayingRef.current = isPlaying; },      [isPlaying]);
   useEffect(() => { currentLyricsRef.current = currentLyrics; }, [currentLyrics]);
   useEffect(() => { lyricsWinRef.current = lyricsWinOpen; }, [lyricsWinOpen]);
+  useEffect(() => { lyricsPinnedRef.current = lyricsPinned; }, [lyricsPinned]);
+  useEffect(() => { lyricsThemeRef.current = lyricsTheme; }, [lyricsTheme]);
+
+  // Last lyrics array pushed to the overlay (so ticks don't resend the whole array)
+  const lastSentLyricsRef = useRef<LyricLine[] | null | undefined>(undefined);
+
+  /**
+   * Send a playback anchor to the overlay window.
+   *
+   * The overlay runs its own clock from this anchor, so this only needs to fire
+   * on a state change (play/pause/seek/track/lyrics) plus a slow heartbeat - not
+   * on every position update. `lyrics` is only attached when it changed.
+   */
+  const pushLyricsSync = useCallback(
+    (opts?: {
+      includeLyrics?: boolean;
+      lyrics?: LyricLine[] | null;
+      force?: boolean;
+      /** Override the derived play state (used to freeze the overlay while buffering). */
+      playing?: boolean;
+    }) => {
+      if (!lyricsWinRef.current && !opts?.force) return;
+      const audio = audioRef.current;
+      const track = currentTrackRef.current;
+      const duration =
+        audio && Number.isFinite(audio.duration) && audio.duration > 0
+          ? audio.duration
+          : track?.duration ?? 0;
+      const payload: Record<string, unknown> = {
+        v: 2,
+        seq: ++syncSeqRef.current,
+        trackId: track?.id ?? "",
+        trackTitle: track?.title ?? "",
+        trackArtist: track?.artist ?? "",
+        position: audio && Number.isFinite(audio.currentTime) ? audio.currentTime : 0,
+        // The audio element is the source of truth: React state lags play()/pause().
+        playing: opts?.playing ?? (audio ? !audio.paused && !audio.ended : isPlayingRef.current),
+        rate: audio && Number.isFinite(audio.playbackRate) && audio.playbackRate > 0 ? audio.playbackRate : 1,
+        duration,
+        wall: Date.now(),
+        lyricsVersion: lyricsVersionRef.current,
+      };
+      if (opts?.includeLyrics) {
+        payload.lyrics = opts.lyrics !== undefined ? opts.lyrics : currentLyricsRef.current;
+      }
+      emit("lyrics-sync", payload).catch(() => {});
+    },
+    []
+  );
 
   // Listen for sync events from lyrics window
   useEffect(() => {
     const unsubReady = listen("lyrics-ready", () => {
-      if (currentTrackRef.current) {
-        emit("lyrics-update", {
-          trackId:     currentTrackRef.current.id,
-          progress:    audioRef.current?.currentTime ?? 0,
-          isPlaying:   isPlayingRef.current,
-          trackTitle:  currentTrackRef.current.title,
-          trackArtist: currentTrackRef.current.artist,
-          lyrics:      currentLyricsRef.current,
-        }).catch(() => {});
-      }
+      // The overlay is alive: it was created hidden and has just painted.
+      lyricsWinRef.current = true;
+      setLyricsWinOpen(true);
+      pushLyricsSync({ includeLyrics: true, force: true });
       emit("lyrics-pin-state", { pinned: lyricsPinned }).catch(() => {});
       emit("lyrics-theme-state", { theme: lyricsTheme }).catch(() => {});
+    });
+
+    // The overlay asks for a fresh anchor while playing (and for the lyrics list
+    // if it has none, e.g. after the player window reloaded).
+    const unsubResync = listen<{ needLyrics?: boolean }>("lyrics-resync", (e) => {
+      pushLyricsSync({ includeLyrics: Boolean(e.payload?.needLyrics), force: true });
     });
 
     const unsubPin = listen<{ pinned: boolean }>("lyrics-pin-state", (e) => {
@@ -237,12 +292,20 @@ export default function App() {
       setLyricsTheme(e.payload.theme);
     });
 
+    // Best-effort notice from the overlay as it unloads.
+    const unsubClosed = listen("lyrics-closed", () => {
+      lyricsWinRef.current = false;
+      setLyricsWinOpen(false);
+    });
+
     return () => {
       unsubReady.then(fn => fn());
+      unsubResync.then(fn => fn());
       unsubPin.then(fn => fn());
       unsubTheme.then(fn => fn());
+      unsubClosed.then(fn => fn());
     };
-  }, [lyricsPinned, lyricsTheme]);
+  }, [lyricsPinned, lyricsTheme, pushLyricsSync]);
 
   // Emit state changes to lyrics window
   useEffect(() => {
@@ -258,20 +321,33 @@ export default function App() {
   }, [lyricsTheme, lyricsWinOpen]);
 
   // Persist playlists
+  // (debounced: JSON.stringify of the full library on every change blocked the UI thread)
   useEffect(() => {
-    try {
-      localStorage.setItem("mg_playlists", JSON.stringify(playlists));
-    } catch {}
+    const id = setTimeout(() => {
+      try { localStorage.setItem(STORAGE_KEYS.playlists, JSON.stringify(playlists)); } catch {}
+    }, 400);
+    return () => clearTimeout(id);
   }, [playlists]);
 
   // Persist all tracks whenever updated
-  useEffect(() => {
+  const allTracksSaveRef = useRef(allTracks);
+  const saveTracksNow = useCallback(() => {
     try {
-      localStorage.setItem("mg_saved_tracks", JSON.stringify(sanitizeTracksForStorage(allTracks)));
+      localStorage.setItem(STORAGE_KEYS.savedTracks, JSON.stringify(sanitizeTracksForStorage(allTracksSaveRef.current)));
     } catch (e) {
       console.error("Failed to save tracks to localStorage:", e);
     }
-  }, [allTracks]);
+  }, []);
+  useEffect(() => {
+    allTracksSaveRef.current = allTracks;
+    const id = setTimeout(saveTracksNow, 400);
+    return () => clearTimeout(id);
+  }, [allTracks, saveTracksNow]);
+  // Flush a pending debounced save if the window is closed right after a change
+  useEffect(() => {
+    window.addEventListener("beforeunload", saveTracksNow);
+    return () => window.removeEventListener("beforeunload", saveTracksNow);
+  }, [saveTracksNow]);
 
   // ---------- track selection helpers ----------
   const playTrack = useCallback((track: Track) => {
@@ -280,7 +356,6 @@ export default function App() {
       const exists = prev.some(t => t.id === track.id);
       if (!exists) {
         const next = [track, ...prev];
-        try { localStorage.setItem("mg_saved_tracks", JSON.stringify(sanitizeTracksForStorage(next))); } catch {}
         return next;
       }
       return prev;
@@ -312,6 +387,22 @@ export default function App() {
     setCurrentTrack(allTracks[idx]);
     setProgress(0);
   }, [currentTrack, allTracks]);
+
+  // Auto-advance to the next track after an unplayable one, with a short delay so the
+  // error is visible. The timer is tracked: a manual track change cancels it, and a run of
+  // consecutive failures stops the cascade instead of burning through the whole playlist.
+  const scheduleAutoSkip = useCallback(() => {
+    if (consecutiveSkipsRef.current >= 3) {
+      console.error("[playback] AUTO_SKIP_ABORT: too many consecutive unplayable tracks, staying put");
+      return;
+    }
+    consecutiveSkipsRef.current += 1;
+    if (skipTimeoutRef.current) clearTimeout(skipTimeoutRef.current);
+    skipTimeoutRef.current = setTimeout(() => {
+      skipTimeoutRef.current = null;
+      handleNext();
+    }, 1500);
+  }, [handleNext]);
 
   const handleEnded = useCallback(() => {
     if (!audioRef.current) return;
@@ -356,8 +447,13 @@ export default function App() {
     }
 
     let active = true;
-    const lyricsKey = `${currentTrack.title.trim().toLowerCase()}::${currentTrack.artist.trim().toLowerCase()}`;
+    // Cache key includes a duration bucket: the duration is often 0/unknown until audio
+    // metadata loads, and lyrics fetched without it can be a different edit/version.
+    const durBucket = currentTrack.duration && currentTrack.duration > 15 ? Math.round(currentTrack.duration / 4) : 0;
+    const lyricsKey = `${currentTrack.title.trim().toLowerCase()}::${currentTrack.artist.trim().toLowerCase()}::${durBucket}`;
     const cachedLyrics = lyricsCacheRef.current.get(lyricsKey);
+    const sameTrackRefetch = lyricsTrackIdRef.current === currentTrack.id;
+    lyricsTrackIdRef.current = currentTrack.id;
 
     if (cachedLyrics) {
       console.log(`[lyrics] CACHE_HIT: ${currentTrack.title} (${cachedLyrics.length} lines, 0ms)`);
@@ -365,7 +461,9 @@ export default function App() {
       return;
     }
 
-    setCurrentLyrics(null); // null = searching
+    // null = searching. Keep showing current lyrics while refining the same track
+    // after its real duration became known (avoids a flash to "Searching...").
+    if (!sameTrackRefetch) setCurrentLyrics(null);
 
     invoke<LyricLine[]>("fetch_lyrics", {
       title: currentTrack.title,
@@ -384,16 +482,39 @@ export default function App() {
       });
 
     return () => { active = false; };
-  }, [currentTrack?.id, currentTrack?.title, currentTrack?.artist, currentTrack?.duration, currentTrack?.album]);
+  // duration/album intentionally excluded: loadedmetadata rewrites duration and would
+  // cancel the in-flight fetch, re-fetch, and flash the lyrics overlay back to 'searching'.
+  }, [currentTrack?.id, currentTrack?.title, currentTrack?.artist]);
 
   // Resolve stream URL for a track (instant cache hit, multi-detail studio selection, forceFresh bypass)
   const resolveStreamUrl = useCallback(async (track: Track, forceFresh = false): Promise<string> => {
-    let src = track.audioUrl ?? "";
+    const src = track.audioUrl ?? "";
+    streamResolveErrorRef.current = null;
     if (track.source === "local") {
       return src;
     }
 
     const cacheKey = track.id || `${track.title}__${track.artist}`;
+
+    // True only for URLs an HTMLAudioElement can play directly: no provider pages,
+    // no 30s Spotify previews, no HLS playlists, no expired signed URLs
+    const isDirectStream = (u: string): boolean => {
+      if (!u || u.includes("p.scdn.co") || u.includes(".m3u8") || isExpiredStream(u)) return false;
+      const path = u.split(/[?#]/)[0].toLowerCase();
+      return (
+        u.includes("googlevideo.com") ||
+        path.endsWith(".mp3") ||
+        path.endsWith(".m4a") ||
+        path.endsWith(".opus") ||
+        path.endsWith(".ogg") ||
+        path.endsWith(".wav") ||
+        path.endsWith(".flac") ||
+        path.endsWith(".aac") ||
+        path.endsWith(".webm") ||
+        u.startsWith("blob:") ||
+        u.startsWith("asset:")
+      );
+    };
 
     if (!forceFresh) {
       const cached = streamCacheRef.current.get(cacheKey);
@@ -402,21 +523,15 @@ export default function App() {
         return cached.url;
       }
 
-      // If we already have a direct playable audio stream (excluding 30s spotify demo snippets and expired streams), use it immediately
-      if (
-        src &&
-        !src.includes("p.scdn.co") &&
-        !src.includes(".m3u8") &&
-        !isExpiredStream(src) &&
-        (
-          src.includes("googlevideo.com") ||
-          src.endsWith(".mp3") ||
-          src.endsWith(".m4a") ||
-          src.endsWith(".opus") ||
-          src.startsWith("blob:") ||
-          src.startsWith("asset:")
-        )
-      ) {
+      // Join an in-flight resolution (e.g. the next-track prefetch) instead of starting a duplicate yt-dlp run
+      const inFlight = resolveInFlightRef.current.get(cacheKey);
+      if (inFlight) {
+        console.log(`[playback] STREAM_RESOLVE_JOIN: ${track.title}`);
+        return inFlight;
+      }
+
+      // If we already have a direct playable audio stream, use it immediately
+      if (isDirectStream(src)) {
         streamCacheRef.current.set(cacheKey, { url: src, timestamp: Date.now() });
         return src;
       }
@@ -425,34 +540,49 @@ export default function App() {
       streamCacheRef.current.delete(cacheKey);
     }
 
-    // Resolve full track stream dynamically via native backend with multi-detail verification
-    try {
-      const query = (track.audioUrl && (track.audioUrl.includes("youtube.com/watch") || track.audioUrl.includes("youtu.be/")))
-        ? track.audioUrl
-        : `${track.artist} - ${track.title}`.trim();
-      const info = await invoke<any>("get_preview_info", {
-        input: query,
-        expectedDuration: track.duration > 0 ? track.duration : undefined,
-        expectedArtist: track.artist || undefined,
-        expectedAlbum: track.album || undefined,
-      });
-      if (info && info.stream_url && !info.stream_url.includes("p.scdn.co") && !info.stream_url.includes(".m3u8")) {
-        streamCacheRef.current.set(cacheKey, { url: info.stream_url, timestamp: Date.now() });
-        // Update in-place so subsequent access doesn't retain expired audioUrl
-        track.audioUrl = info.stream_url;
-        if (currentTrackRef.current && currentTrackRef.current.id === track.id) {
-          currentTrackRef.current.audioUrl = info.stream_url;
+    // Resolve full track stream dynamically via native backend with multi-detail verification.
+    // Registered in resolveInFlightRef so concurrent callers share this same promise.
+    const resolution = (async (): Promise<string> => {
+      try {
+        const query = (track.audioUrl && (track.audioUrl.includes("youtube.com/watch") || track.audioUrl.includes("youtu.be/")))
+          ? track.audioUrl
+          : `${track.artist} - ${track.title}`.trim();
+        const info = await invoke<any>("get_preview_info", {
+          input: query,
+          expectedDuration: track.duration > 0 ? track.duration : undefined,
+          expectedArtist: track.artist || undefined,
+          expectedAlbum: track.album || undefined,
+        });
+        if (info && info.stream_url && !info.stream_url.includes("p.scdn.co") && !info.stream_url.includes(".m3u8")) {
+          streamCacheRef.current.set(cacheKey, { url: info.stream_url, timestamp: Date.now() });
+          // Update in-place so subsequent access doesn't retain expired audioUrl
+          track.audioUrl = info.stream_url;
+          if (currentTrackRef.current && currentTrackRef.current.id === track.id) {
+            currentTrackRef.current.audioUrl = info.stream_url;
+          }
+          return info.stream_url;
         }
-        return info.stream_url;
+        // Backend answered but returned nothing playable
+        streamResolveErrorRef.current = info
+          ? "Backend returned no directly playable stream for this track"
+          : "Backend returned no stream metadata";
+      } catch (err) {
+        // Keep the real backend error (yt-dlp bot wall, timeout, missing binary...)
+        // so the UI can show it instead of a generic "no stream" message
+        streamResolveErrorRef.current = String(err);
+        console.warn("[playback] stream resolution failed:", err);
       }
-    } catch (err) {
-      console.warn("Stream resolution fallback:", err);
-    }
-    // Guard against passing raw webpage URLs directly to HTML5 audio element
-    if (src.includes("spotify.com") || src.includes("youtube.com") || src.includes("youtu.be")) {
+      // Never hand a stale/expired/preview/webpage URL to the audio element as a fallback:
+      // it can only fail, or worse, silently play a 30-second preview
       return "";
+    })();
+
+    resolveInFlightRef.current.set(cacheKey, resolution);
+    try {
+      return await resolution;
+    } finally {
+      resolveInFlightRef.current.delete(cacheKey);
     }
-    return forceFresh ? "" : src;
   }, []);
 
   // Proactive background pre-fetch: when current track is playing, pre-fetch next track's lyrics and stream
@@ -466,7 +596,8 @@ export default function App() {
     if (!nextTrack) return;
 
     const streamKey = nextTrack.id || `${nextTrack.title}__${nextTrack.artist}`;
-    const lyricsKey = `${nextTrack.title.trim().toLowerCase()}::${nextTrack.artist.trim().toLowerCase()}`;
+    const nextDurBucket = nextTrack.duration && nextTrack.duration > 15 ? Math.round(nextTrack.duration / 4) : 0;
+    const lyricsKey = `${nextTrack.title.trim().toLowerCase()}::${nextTrack.artist.trim().toLowerCase()}::${nextDurBucket}`;
 
     // 1. Prefetch lyrics early (after 3.5s) - lightweight text JSON, eliminates lyrics delay on track switch
     const lyricsTimer = setTimeout(() => {
@@ -504,9 +635,21 @@ export default function App() {
     if (!audioRef.current || !currentTrack) return;
 
     let active = true;
+    errorTokenRef.current++;
     retryCountRef.current = 0;
     lastKnownTimeRef.current = 0;
     setPlaybackError(null);
+    // A new track supersedes any auto-skip scheduled by the previous one
+    if (skipTimeoutRef.current) {
+      clearTimeout(skipTimeoutRef.current);
+      skipTimeoutRef.current = null;
+    }
+
+    // Stop the previous track immediately: it must not keep playing (and keep pushing
+    // progress/lyrics events for the old position) while the new stream resolves
+    audioRef.current.pause();
+    audioRef.current.removeAttribute("src");
+    audioRef.current.load();
 
     const resolveAndPlay = async () => {
       try {
@@ -514,20 +657,21 @@ export default function App() {
         if (!active || !audioRef.current) return;
 
         if (!src) {
-          setPlaybackError("No playable stream found for this track");
+          setPlaybackError(streamResolveErrorRef.current ?? "No playable stream found for this track");
           setIsPlaying(false);
-          audioRef.current.removeAttribute("src");
+          scheduleAutoSkip();
           return;
         }
 
         audioRef.current.src = src;
-        audioRef.current.volume = volume;
+        // Element volume persists across src changes and stays in sync via the volume effect
         audioRef.current.load();
 
         if (isPlayingRef.current) {
           try {
             await audioRef.current.play();
           } catch (err: any) {
+            if (!active) return;
             if (err.name !== "AbortError") {
               console.error("[playback] play error:", err);
               handleAudioError();
@@ -539,131 +683,159 @@ export default function App() {
         if (active) {
           setPlaybackError(`Failed to resolve stream: ${err}`);
           setIsPlaying(false);
-          setTimeout(() => {
-            handleNext();
-          }, 1500);
+          scheduleAutoSkip();
         }
       }
     };
 
     resolveAndPlay();
 
-    if (lyricsWinRef.current) {
-      emit("lyrics-update", {
-        trackId: currentTrack.id,
-        progress: 0,
-        isPlaying,
-        trackTitle: currentTrack.title,
-        trackArtist: currentTrack.artist,
-        lyrics: [],
-      }).catch(() => {});
-    }
+    // A new track: tell the overlay right away (null = "searching", so it shows
+    // the searching state instead of "lyrics unavailable" while fetching).
+    lyricsVersionRef.current += 1;
+    pushLyricsSync({ includeLyrics: true, lyrics: null });
+
+    // Cancel this resolution if the track changes again before it finishes: without this,
+    // a slow yt-dlp run for track A can overwrite track B's freshly loaded stream
+    return () => { active = false; };
   }, [currentTrack?.id]);
 
-  // Handle audio errors — retry with fresh stream resolution and seamlessly restore playback position
+  // Core stream-recovery path shared by the audio error event and the stall watchdog:
+  // re-resolves a fresh stream URL and seamlessly restores playback position
+  const attemptStreamRefresh = async (reason: string) => {
+    if (!audioRef.current || !currentTrackRef.current) return;
+    // The error event and a rejected play() promise can both fire for one failure: refresh once
+    if (refreshInFlightRef.current) return;
+    refreshInFlightRef.current = true;
+    try {
+      const track = currentTrackRef.current;
+
+      const maxRetries = 2;
+      if (retryCountRef.current >= maxRetries) {
+        console.error("[playback] STREAM_EXPIRED: Max retries reached for", track.title, `(${reason})`);
+        setPlaybackError(`"${track.title}" unavailable — skipping to next song...`);
+        setIsPlaying(false);
+        audioRef.current.pause();
+        scheduleAutoSkip();
+        return;
+      }
+
+      retryCountRef.current += 1;
+      const resumePos = lastKnownTimeRef.current;
+      console.warn(`[playback] STREAM_REFRESH: Retrying stream resolution (attempt ${retryCountRef.current}/${maxRetries}) for "${track.title}" at ${resumePos.toFixed(1)}s (${reason})`);
+      setPlaybackError(null);
+
+      // Evict stale stream from cache so retry fetches a fresh stream
+      const cacheKey = track.id || `${track.title}__${track.artist}`;
+      streamCacheRef.current.delete(cacheKey);
+
+      // Small delay to allow any transient network socket reset to settle
+      await new Promise(r => setTimeout(r, 400));
+
+      // The user may have switched tracks while we waited: never clobber the new track
+      if (currentTrackRef.current?.id !== track.id) return;
+
+      try {
+        const src = await resolveStreamUrl(track, true);
+        if (currentTrackRef.current?.id !== track.id || !audioRef.current) return;
+        if (!src) {
+          setPlaybackError(streamResolveErrorRef.current ?? "Stream URL unavailable");
+          setIsPlaying(false);
+          scheduleAutoSkip();
+          return;
+        }
+        audioRef.current.src = src;
+        // Element volume persists across src changes and stays in sync via the volume effect
+        audioRef.current.load();
+
+        // Seamlessly restore playback position when metadata is loaded
+        const restorePositionAndPlay = () => {
+          if (!audioRef.current || currentTrackRef.current?.id !== track.id) return;
+          if (resumePos > 0) {
+            try {
+              audioRef.current.currentTime = Math.max(0, resumePos);
+            } catch (e) {
+              console.warn("[playback] Could not restore currentTime:", e);
+            }
+          }
+          if (isPlayingRef.current) {
+            audioRef.current.play().catch(playErr => {
+              console.warn("[playback] Auto-resume play error:", playErr);
+            });
+          }
+        };
+
+        audioRef.current.addEventListener("loadedmetadata", restorePositionAndPlay, { once: true });
+
+        if (isPlayingRef.current) {
+          audioRef.current.play().catch(() => {});
+        }
+      } catch (err) {
+        console.error("[playback] STREAM_REFRESH failed:", err);
+        if (currentTrackRef.current?.id !== track.id) return;
+        setPlaybackError(`Stream refresh failed: ${err}`);
+        setIsPlaying(false);
+      }
+    } finally {
+      refreshInFlightRef.current = false;
+    }
+  };
+
+  // Handle audio element errors: decode errors skip immediately (a fresh URL serves the
+  // same bytes), everything else retries with a fresh stream URL (expired signed URLs
+  // are the common case)
   const handleAudioError = async () => {
     if (!audioRef.current || !currentTrackRef.current) return;
+    // No source loaded (e.g. we just cleared it for a track switch): nothing to recover
+    if (!audioRef.current.currentSrc) return;
     const track = currentTrackRef.current;
+    const mediaErr = audioRef.current.error;
+    const MEDIA_ERR_DECODE = 3;
+    const codeNames: Record<number, string> = {
+      1: "MEDIA_ERR_ABORTED",
+      2: "MEDIA_ERR_NETWORK",
+      3: "MEDIA_ERR_DECODE",
+      4: "MEDIA_ERR_SRC_NOT_SUPPORTED",
+    };
+    const errDesc = mediaErr
+      ? `${codeNames[mediaErr.code] || `MediaError ${mediaErr.code}`}${mediaErr.message ? `: ${mediaErr.message}` : ""}`
+      : "unknown playback error";
 
     // Only retry for non-local tracks (local files don't expire)
     if (track.source === "local") {
-      setPlaybackError("Playback failed — file may be missing or corrupted");
+      setPlaybackError(`Playback failed — file may be missing or corrupted (${errDesc})`);
       setIsPlaying(false);
       return;
     }
 
-    const maxRetries = 2;
-    if (retryCountRef.current >= maxRetries) {
-      console.error("[playback] STREAM_EXPIRED: Max retries reached for", track.title);
-      setPlaybackError(`"${track.title}" unavailable — skipping to next song...`);
+    if (mediaErr && mediaErr.code === MEDIA_ERR_DECODE) {
+      console.error("[playback] DECODE_ERROR:", errDesc);
+      setPlaybackError(`"${track.title}" could not be decoded — skipping...`);
       setIsPlaying(false);
-      if (audioRef.current) {
-        audioRef.current.pause();
-      }
-      setTimeout(() => {
-        handleNext();
-      }, 1500);
+      scheduleAutoSkip();
       return;
     }
 
-    retryCountRef.current += 1;
-    const resumePos = lastKnownTimeRef.current;
-    console.warn(`[playback] STREAM_REFRESH: Retrying stream resolution (attempt ${retryCountRef.current}/${maxRetries}) for "${track.title}" at ${resumePos.toFixed(1)}s`);
-    setPlaybackError(null);
-
-    // Evict stale stream from cache so retry fetches a fresh stream
-    const cacheKey = track.id || `${track.title}__${track.artist}`;
-    streamCacheRef.current.delete(cacheKey);
-
-    // Small delay to allow any transient network socket reset to settle
-    await new Promise(r => setTimeout(r, 400));
-
-    try {
-      const src = await resolveStreamUrl(track, true);
-      if (!audioRef.current) return;
-      if (!src) {
-        setPlaybackError("Stream URL unavailable");
-        setIsPlaying(false);
-        return;
-      }
-      audioRef.current.src = src;
-      audioRef.current.volume = volume;
-      audioRef.current.load();
-
-      // Seamlessly restore playback position when metadata is loaded
-      const restorePositionAndPlay = () => {
-        if (!audioRef.current) return;
-        if (resumePos > 0) {
-          try {
-            audioRef.current.currentTime = Math.max(0, resumePos);
-          } catch (e) {
-            console.warn("[playback] Could not restore currentTime:", e);
-          }
-        }
-        if (isPlayingRef.current) {
-          audioRef.current.play().catch(playErr => {
-            console.warn("[playback] Auto-resume play error:", playErr);
-          });
-        }
-      };
-
-      audioRef.current.addEventListener("loadedmetadata", restorePositionAndPlay, { once: true });
-      audioRef.current.addEventListener("canplay", restorePositionAndPlay, { once: true });
-
-      if (isPlayingRef.current) {
-        audioRef.current.play().catch(() => {});
-      }
-    } catch (err) {
-      console.error("[playback] STREAM_REFRESH failed:", err);
-      setPlaybackError(`Stream refresh failed: ${err}`);
-      setIsPlaying(false);
-    }
+    attemptStreamRefresh(errDesc);
   };
 
   const handleAudioWaiting = () => {
     if (!isPlayingRef.current || !audioRef.current) return;
     if (stallTimeoutRef.current) clearTimeout(stallTimeoutRef.current);
     stallTimeoutRef.current = setTimeout(() => {
+      stallTimeoutRef.current = null;
       if (isPlayingRef.current && audioRef.current && (audioRef.current.paused || audioRef.current.readyState < 3)) {
         console.warn("[playback] Audio stalled for >10s — attempting stream recovery");
-        handleAudioError();
+        attemptStreamRefresh("stalled >10s (buffer underrun)");
       }
     }, 10000);
   };
 
-  // Emit to lyrics window whenever currentLyrics changes (i.e. finished background fetching)
+  // Push the lyrics list when it changes (search finished, cache hit, no match).
   useEffect(() => {
-    if (lyricsWinRef.current && currentTrack) {
-      emit("lyrics-update", {
-        trackId: currentTrack.id,
-        progress: audioRef.current?.currentTime ?? 0,
-        isPlaying,
-        trackTitle: currentTrack.title,
-        trackArtist: currentTrack.artist,
-        lyrics: currentLyrics,
-      }).catch(() => {});
-    }
-  }, [currentLyrics, lyricsWinOpen]);
+    lyricsVersionRef.current += 1;
+    pushLyricsSync({ includeLyrics: true });
+  }, [currentLyrics, pushLyricsSync]);
 
   const handleTimeUpdate = () => {
     if (!audioRef.current) return;
@@ -678,20 +850,27 @@ export default function App() {
       stallTimeoutRef.current = null;
     }
 
-    // Throttle lyric events to ~3 per second (plenty for sync)
+    // Heartbeat only: the overlay extrapolates from the last anchor with its own
+    // clock, so position does not need to be pushed at 3Hz. This rides on media
+    // time (which keeps ticking in a minimised window) instead of a timer, and
+    // is only a safety net for audio-clock drift; the overlay also requests a
+    // fresh anchor every few seconds.
     const now = Date.now();
-    if (lyricsWinRef.current && now - lastEmitRef.current > 330) {
+    if (lyricsWinRef.current && now - lastEmitRef.current > 2000) {
       lastEmitRef.current = now;
-      emit("lyrics-update", {
-        trackId:     currentTrackRef.current?.id    ?? "",
-        progress:    t,
-        isPlaying:   isPlayingRef.current,
-        trackTitle:  currentTrackRef.current?.title  ?? "",
-        trackArtist: currentTrackRef.current?.artist ?? "",
-        lyrics:      currentLyricsRef.current,
-      }).catch(() => {});
+      pushLyricsSync();
     }
   };
+
+  const handleSeek = useCallback((time: number) => {
+    if (audioRef.current) {
+      audioRef.current.currentTime = time;
+      setProgress(time);
+      lastKnownTimeRef.current = time;
+      // Seek is authoritative: push at once instead of waiting for `seeked`.
+      pushLyricsSync();
+    }
+  }, [pushLyricsSync]);
 
   const handleLoadedMetadata = () => {
     if (audioRef.current && currentTrack) {
@@ -700,12 +879,10 @@ export default function App() {
         setCurrentTrack(prev => prev ? { ...prev, duration: dur } : null);
         setAllTracks(prev => prev.map(t => t.id === currentTrack.id ? { ...t, duration: dur } : t));
       }
+      // Real duration is now known: the overlay clamps its clock to it.
+      pushLyricsSync();
     }
   };
-
-  const handleSeek = useCallback((time: number) => {
-    if (audioRef.current) { audioRef.current.currentTime = time; setProgress(time); }
-  }, []);
 
   // ---------- floating lyrics window ----------
   const openLyricsWindow = useCallback(async () => {
@@ -713,73 +890,65 @@ export default function App() {
       alert("Floating overlay lyrics require the MGlyrics desktop application window. Run 'run.bat' on your machine to use desktop overlay mode.");
       return;
     }
-    const existing = await safeGetWebviewWindow("lyrics");
-    if (existing) {
-      existing.show().catch(() => {});
-    } else {
-      let x = undefined;
-      let y = undefined;
-      try {
-        const savedPos = localStorage.getItem("mg_lyrics_pos");
-        if (savedPos) {
-          const parsed = JSON.parse(savedPos);
-          if (typeof parsed.x === "number" && typeof parsed.y === "number") {
-            x = parsed.x;
-            y = parsed.y;
-          }
-        }
-      } catch (e) {}
-
-      try {
-        new WebviewWindow("lyrics", {
-          url:        "index.html#lyrics",
-          title:      "",
-          width:      920,
-          height:     150,
-          x,
-          y,
-          transparent: true,
-          decorations: false,
-          alwaysOnTop: true,
-          skipTaskbar: true,
-          resizable:   true,
-          focus:       false,      // never steal focus from game
-        });
-      } catch (err) {
-        console.warn("Failed to create lyrics window:", err);
-      }
-    }
-    lyricsWinRef.current = true;
-    setLyricsWinOpen(true);
-
-    // Send current state immediately
-    if (currentTrackRef.current) {
-      emit("lyrics-update", {
-        trackId:     currentTrackRef.current.id,
-        progress:    audioRef.current?.currentTime ?? 0,
-        isPlaying:   isPlayingRef.current,
-        trackTitle:  currentTrackRef.current.title,
-        trackArtist: currentTrackRef.current.artist,
-        lyrics:      currentLyricsRef.current,
-      }).catch(() => {});
-    }
-  }, []);
-
-  const closeLyricsWindow = useCallback(async () => {
-    if (!isTauriApp()) {
-      lyricsWinRef.current = false;
-      setLyricsWinOpen(false);
+    const win = await openOverlayWindow();
+    if (!win) {
+      console.warn("[overlay] lyrics window could not be created");
       return;
     }
-    const win = await safeGetWebviewWindow("lyrics");
-    if (win) win.close().catch(() => {});
+    // The window can be closed from the OS (Alt+F4, its own X, app shutdown).
+    // Reset the player state when that happens, otherwise the toggle stays "on"
+    // and the next press closes a window that is no longer there.
+    win
+      .once("tauri://destroyed", () => {
+        lyricsWinRef.current = false;
+        setLyricsWinOpen(false);
+      })
+      .catch(() => {});
+    lyricsWinRef.current = true;
+    lastSentLyricsRef.current = undefined;
+    setLyricsWinOpen(true);
+    // Send current state immediately (the overlay also asks on `lyrics-ready`).
+    pushLyricsSync({ includeLyrics: true, force: true });
+  }, [pushLyricsSync]);
+
+  const closeLyricsWindow = useCallback(async () => {
     lyricsWinRef.current = false;
     setLyricsWinOpen(false);
+    if (!isTauriApp()) return;
+    await closeOverlayWindow();
   }, []);
 
-  const toggleLyrics = useCallback(() => {
-    lyricsWinOpen ? closeLyricsWindow() : openLyricsWindow();
-  }, [lyricsWinOpen, openLyricsWindow, closeLyricsWindow]);
+  const toggleLyrics = useCallback(async () => {
+    // Authoritative: ask the window manager rather than trusting our own flag.
+    const existing = await safeGetWebviewWindow("lyrics");
+    if (existing) await closeLyricsWindow();
+    else await openLyricsWindow();
+  }, [openLyricsWindow, closeLyricsWindow]);
+
+  // ---------- overlay lifetime guard ----------
+  // The overlay is click-through, frameless and hidden from the taskbar, so if this
+  // window goes away without taking it down the user cannot dismiss it at all.
+  // Rust owns the primary path (on_window_event); this is the fallback: heartbeat while
+  // we are alive, an explicit app-closing signal, and a watchdog on the other side.
+  useEffect(() => {
+    if (!lyricsWinOpen) return;
+    const beat = setInterval(() => {
+      emit("lyrics-heartbeat", { t: Date.now() }).catch(() => {});
+    }, 2000);
+    return () => clearInterval(beat);
+  }, [lyricsWinOpen]);
+
+  useEffect(() => {
+    const announceExit = () => {
+      emit("app-closing", {}).catch(() => {});
+    };
+    window.addEventListener("pagehide", announceExit);
+    window.addEventListener("beforeunload", announceExit);
+    return () => {
+      window.removeEventListener("pagehide", announceExit);
+      window.removeEventListener("beforeunload", announceExit);
+    };
+  }, []);
 
   // ---------- keyboard shortcuts ----------
   useEffect(() => {
@@ -823,7 +992,10 @@ export default function App() {
               const delta = e.shiftKey ? 10 : 5;
               const newTime = Math.max(0, audioRef.current.currentTime - delta);
               audioRef.current.currentTime = newTime;
+              lastKnownTimeRef.current = newTime;
               setProgress(newTime);
+              lastKnownTimeRef.current = newTime;
+              pushLyricsSync();
             }
             handled = true;
             break;
@@ -835,7 +1007,10 @@ export default function App() {
               const delta = e.shiftKey ? 10 : 5;
               const newTime = Math.min(audioRef.current.duration, audioRef.current.currentTime + delta);
               audioRef.current.currentTime = newTime;
+              lastKnownTimeRef.current = newTime;
               setProgress(newTime);
+              lastKnownTimeRef.current = newTime;
+              pushLyricsSync();
             }
             handled = true;
             break;
@@ -909,7 +1084,7 @@ export default function App() {
           case "T": {
             if (e.ctrlKey || e.metaKey || e.altKey) break;
             setLyricsTheme(prev => {
-              const themes = ["nebula", "cyberpunk", "terminal", "elegant", "minimal", "emerald", "sunset", "synthwave", "nordic", "tokyo"];
+              const themes = ["classic", "inverse", "serif", "mono"];
               const nextIdx = (themes.indexOf(prev) + 1) % themes.length;
               return themes[nextIdx];
             });
@@ -927,17 +1102,19 @@ export default function App() {
 
     document.addEventListener("keydown", handleKeyDown, true);
     return () => document.removeEventListener("keydown", handleKeyDown, true);
-  }, [toggleLyrics, handlePrev, handleNext]);
+  }, [toggleLyrics, handlePrev, handleNext, pushLyricsSync]);
 
   // ---------- local & playlist track injection ----------
-  const addLocalTracks = useCallback((newTracks: Track[]) => {
+  // keepUrlDuplicates: playlist imports reference tracks by id, so a track must
+  // never be dropped just because the same URL exists under another id,
+  // otherwise the playlist keeps an id that resolves to nothing.
+  const addLocalTracks = useCallback((newTracks: Track[], opts?: { keepUrlDuplicates?: boolean }) => {
     setAllTracks(prev => {
       const existingIds = new Set(prev.map(t => t.id));
       const existingUrls = new Set(prev.map(t => t.audioUrl).filter(Boolean));
-      const fresh = newTracks.filter(t => !existingIds.has(t.id) && (!t.audioUrl || !existingUrls.has(t.audioUrl)));
+      const fresh = newTracks.filter(t => !existingIds.has(t.id) && (opts?.keepUrlDuplicates || !t.audioUrl || !existingUrls.has(t.audioUrl)));
       if (fresh.length === 0) return prev;
       const updated = [...prev, ...fresh];
-      try { localStorage.setItem("mg_saved_tracks", JSON.stringify(sanitizeTracksForStorage(updated))); } catch {}
       return updated;
     });
   }, []);
@@ -947,7 +1124,6 @@ export default function App() {
       const exists = prev.some(t => t.id === track.id);
       if (!exists) {
         const updated = [track, ...prev];
-        try { localStorage.setItem("mg_saved_tracks", JSON.stringify(sanitizeTracksForStorage(updated))); } catch {}
         return updated;
       }
       return prev;
@@ -964,17 +1140,19 @@ export default function App() {
         }
         return pl;
       });
-      try { localStorage.setItem("mg_playlists", JSON.stringify(updated)); } catch {}
       return updated;
     });
   }, []);
 
+  const closeShortcuts = useCallback(() => setShowShortcutsModal(false), []);
+  const syncPlaylist = useCallback((pl: Playlist) => setPlaylists(prev => prev.some(p => p.id === pl.id) ? prev : [...prev, pl]), []);
+
   return (
-    <div style={{ height: "100vh", width: "100vw", overflow: "hidden", display: "flex", flexDirection: "column", background: "#08080C", position: "relative" }}>
+    <div style={{ height: "100vh", width: "100vw", overflow: "hidden", display: "flex", flexDirection: "column", background: "var(--bg)", position: "relative" }}>
       {!isTauriApp() && (
         <div style={{
-          background: "linear-gradient(90deg, #7c3aed, #db2777)",
-          color: "#fff",
+          background: "var(--surface-2)",
+          color: "var(--text)",
           padding: "7px 16px",
           fontSize: "12px",
           fontWeight: 700,
@@ -1002,20 +1180,28 @@ export default function App() {
         onLoadedMetadata={handleLoadedMetadata}
         onEnded={handleEnded}
         onError={handleAudioError}
-        onWaiting={handleAudioWaiting}
-        onStalled={handleAudioWaiting}
+        onWaiting={() => { handleAudioWaiting(); pushLyricsSync({ playing: false }); }}
+        onStalled={() => { handleAudioWaiting(); pushLyricsSync({ playing: false }); }}
         onPlay={() => {
           setPlaybackError(null);
+          // Successful playback resets the failure bookkeeping so a later, unrelated
+          // failure gets a full set of retries again
+          retryCountRef.current = 0;
+          consecutiveSkipsRef.current = 0;
           if (stallTimeoutRef.current) {
             clearTimeout(stallTimeoutRef.current);
             stallTimeoutRef.current = null;
           }
+          pushLyricsSync();
         }}
+        onPlaying={() => pushLyricsSync()}
+        onPause={() => pushLyricsSync()}
+        onSeeking={() => pushLyricsSync()}
+        onSeeked={() => pushLyricsSync()}
+        onRateChange={() => pushLyricsSync()}
       />
 
       {/* Atmospheric ambient glows */}
-      <div style={{ position: "absolute", top: "-20%", left: "-10%", width: "55%", height: "65%", borderRadius: "50%", background: "rgba(138,43,226,0.07)", filter: "blur(120px)", pointerEvents: "none" }} />
-      <div style={{ position: "absolute", bottom: "-20%", right: "-10%", width: "45%", height: "55%", borderRadius: "50%", background: "rgba(236,72,153,0.04)", filter: "blur(120px)", pointerEvents: "none" }} />
 
       <div style={{ display: "flex", flex: 1, minHeight: 0, zIndex: 1 }}>
         <Sidebar
@@ -1031,7 +1217,7 @@ export default function App() {
           activeView={activeView}
           playlists={playlists}
           onNavigate={setActiveView}
-          onSyncPlaylist={pl => setPlaylists(prev => [...prev, pl])}
+          onSyncPlaylist={syncPlaylist}
           onAddLocalTracks={addLocalTracks}
           onAddTrackToPlaylist={addTrackToPlaylist}
         />
@@ -1060,7 +1246,7 @@ export default function App() {
       {/* Global Keyboard Shortcuts Cheatsheet Modal */}
       <ShortcutsModal
         isOpen={showShortcutsModal}
-        onClose={() => setShowShortcutsModal(false)}
+        onClose={closeShortcuts}
       />
     </div>
   );

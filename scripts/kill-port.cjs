@@ -1,5 +1,5 @@
 const { execSync } = require("child_process");
-const port = process.argv[2];
+const port = process.argv[2] || process.env.MG_DEV_PORT;
 if (!port) process.exit(0);
 
 try {

@@ -14,6 +14,9 @@ if (process.stdin && !process.stdin.destroyed && !process.argv.includes("build")
 
 // @ts-expect-error process is a nodejs global
 const host = process.env.TAURI_DEV_HOST;
+// Must match build.devUrl in src-tauri/tauri.conf.json (static JSON, cannot read env).
+// @ts-expect-error process is a nodejs global
+const DEV_PORT = Number(process.env.MG_DEV_PORT) || 1420;
 
 // https://vite.dev/config/
 export default defineConfig(async () => ({
@@ -25,14 +28,14 @@ export default defineConfig(async () => ({
   clearScreen: false,
   // 2. tauri expects a fixed port, fail if that port is not available
   server: {
-    port: 1420,
+    port: DEV_PORT,
     strictPort: true,
     host: host || false,
     hmr: host
       ? {
           protocol: "ws",
           host,
-          port: 1421,
+          port: DEV_PORT + 1,
         }
       : undefined,
     watch: {

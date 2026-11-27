@@ -5,55 +5,168 @@
  * Receives live playback state from the main window via Tauri events.
  * Features: 5 themes, font size control (A-/A+), position persistence.
  */
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import { listen, emit } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { safeInvoke } from "./utils/tauriBridge";
+import { STORAGE_KEYS } from "./config";
+import { LyricsClock, selectLineIndex, wordState, type LyricLine } from "./utils/lyricsClock";
+import { saveOverlayRect } from "./utils/overlayWindow";
 
-interface LyricLine { time: number; text: string; }
-
+/**
+ * Payload of the `lyrics-sync` event (protocol v2).
+ *
+ * The player sends an *anchor*: the audio position together with the wall-clock
+ * instant it was read (`wall`). The overlay extrapolates from that anchor with
+ * its own clock, so the display keeps moving between events and does not lag by
+ * the event interval. `lyrics` is only present when the list actually changed.
+ */
 interface LyricsPayload {
+  v?: number;
+  seq?: number;
   trackId: string;
-  progress: number;
-  isPlaying: boolean;
+  position?: number;
+  wall?: number;
+  playing?: boolean;
+  rate?: number;
+  duration?: number;
   trackTitle: string;
   trackArtist: string;
   lyrics?: LyricLine[] | null;
+  // fields of the pre-v2 `lyrics-update` event, still accepted
+  progress?: number;
+  isPlaying?: boolean;
 }
 
 export default function LyricsWindow() {
-  const [info, setInfo] = useState<LyricsPayload>({
-    trackId: "", progress: 0, isPlaying: false,
-    trackTitle: "MG Lyrics", trackArtist: "No track",
-  });
+  const [info, setInfo] = useState<{
+    trackId: string;
+    trackTitle: string;
+    trackArtist: string;
+    playing: boolean;
+    duration: number;
+  }>({ trackId: "", trackTitle: "MG Lyrics", trackArtist: "No track", playing: false, duration: 0 });
+
   const [lyricsList, setLyricsList] = useState<LyricLine[] | null>(null);
   const [isPinned, setIsPinned] = useState(true);
-  const [lyricsTheme, setLyricsTheme] = useState("nebula");
+  const [lyricsTheme, setLyricsTheme] = useState("classic");
 
-  // Persisted lyrics sync offset (in seconds)
-  const [syncOffset, setSyncOffset] = useState<number>(() => {
-    try {
-      const saved = localStorage.getItem("mg_lyrics_offset");
-      return saved ? parseFloat(saved) : 0;
-    } catch {
-      return 0;
-    }
-  });
-
-  const handleOffsetChange = (delta: number) => {
-    setSyncOffset((prev) => {
-      const next = Math.round((prev + delta) * 10) / 10;
-      try { localStorage.setItem("mg_lyrics_offset", String(next)); } catch {}
-      return next;
-    });
-  };
+  // Persisted lyrics sync offset (in seconds), stored per track.
+  const [syncOffset, setSyncOffset] = useState<number>(0);
 
   // Persisted font size
   const [fontSize, setFontSize] = useState<number>(() => {
-    const saved = localStorage.getItem("mg_lyrics_fontsize");
-    return saved ? Math.max(14, Math.min(60, parseInt(saved, 10))) : 28;
+    try {
+      const saved = localStorage.getItem(STORAGE_KEYS.lyricsFontSize);
+      return saved ? Math.max(14, Math.min(60, parseInt(saved, 10))) : 28;
+    } catch {
+      return 28;
+    }
   });
 
+  // Derived line/word state. Recomputed by the animation frame loop and only
+  // committed to React state when the visible result changes.
+  const [frame, setFrame] = useState({
+    idx: -1,
+    activeWord: -1,
+    elapsed: 0,
+    lineDuration: 4.5,
+    finished: false,
+  });
+
+  const clockRef       = useRef<LyricsClock>(new LyricsClock());
+  const lyricsRef      = useRef<LyricLine[] | null>(null);
+  const offsetRef      = useRef(0);
+  const trackIdRef     = useRef("");
+  const frameKeyRef    = useRef("");
+  const shownRef       = useRef(false);
   const positionSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  /** Offset for a track, falling back to the global default. */
+  const readOffset = useCallback((trackId: string): number => {
+    try {
+      const raw =
+        (trackId ? localStorage.getItem(`${STORAGE_KEYS.lyricsOffset}:${trackId}`) : null) ??
+        localStorage.getItem(STORAGE_KEYS.lyricsOffset);
+      const value = raw ? parseFloat(raw) : 0;
+      return Number.isFinite(value) ? value : 0;
+    } catch {
+      return 0;
+    }
+  }, []);
+
+  const writeOffset = useCallback((trackId: string, value: number) => {
+    try {
+      if (trackId) localStorage.setItem(`${STORAGE_KEYS.lyricsOffset}:${trackId}`, String(value));
+      else localStorage.setItem(STORAGE_KEYS.lyricsOffset, String(value));
+    } catch {
+      /* storage disabled */
+    }
+  }, []);
+
+  const setOffsetFor = useCallback(
+    (next: number) => {
+      const value = Math.round(next * 10) / 10;
+      offsetRef.current = value;
+      setSyncOffset(value);
+      writeOffset(trackIdRef.current, value);
+    },
+    [writeOffset]
+  );
+
+  const handleOffsetChange = useCallback(
+    (delta: number) => setOffsetFor(offsetRef.current + delta),
+    [setOffsetFor]
+  );
+
+  /** Apply an anchor from the player window. */
+  const applyAnchor = useCallback(
+    (p: LyricsPayload) => {
+      if (!p || typeof p !== "object") return;
+      const wall = typeof p.wall === "number" ? p.wall : Date.now();
+      const position =
+        typeof p.position === "number" ? p.position : typeof p.progress === "number" ? p.progress : 0;
+      const playing = typeof p.playing === "boolean" ? p.playing : Boolean(p.isPlaying);
+      const duration = typeof p.duration === "number" && p.duration > 0 ? p.duration : 0;
+      const trackId = typeof p.trackId === "string" ? p.trackId : "";
+
+      if (trackId !== trackIdRef.current) {
+        trackIdRef.current = trackId;
+        const offset = readOffset(trackId);
+        offsetRef.current = offset;
+        setSyncOffset(offset);
+        frameKeyRef.current = "";
+      }
+
+      clockRef.current.sync(
+        { trackId, position, wall, playing, rate: typeof p.rate === "number" ? p.rate : 1, duration },
+        Date.now()
+      );
+
+      if (typeof p.lyrics !== "undefined") {
+        lyricsRef.current = p.lyrics ?? null;
+        setLyricsList(p.lyrics ?? null);
+        frameKeyRef.current = "";
+      }
+
+      setInfo((prev) =>
+        prev.trackId === trackId &&
+        prev.trackTitle === p.trackTitle &&
+        prev.trackArtist === p.trackArtist &&
+        prev.playing === playing &&
+        prev.duration === duration
+          ? prev
+          : {
+              trackId,
+              trackTitle: p.trackTitle ?? prev.trackTitle,
+              trackArtist: p.trackArtist ?? prev.trackArtist,
+              playing,
+              duration,
+            }
+      );
+    },
+    [readOffset]
+  );
 
   useEffect(() => {
     // Make background and root transparent
@@ -65,61 +178,74 @@ export default function LyricsWindow() {
     // Set initial ignore cursor events to true (pinned)
     getCurrentWindow().setIgnoreCursorEvents(true).catch(() => {});
 
-    // Save window position to localStorage (debounced)
+    // Global default offset until a track arrives
+    const initialOffset = readOffset("");
+    offsetRef.current = initialOffset;
+    setSyncOffset(initialOffset);
+
+    // Save window position to localStorage (debounced).
+    // outerPosition() is physical, the window options are logical, so the scale
+    // factor is applied here - otherwise the overlay drifts on scaled displays.
     const unsubMove = getCurrentWindow().listen("tauri://move", () => {
       if (positionSaveTimer.current) clearTimeout(positionSaveTimer.current);
       positionSaveTimer.current = setTimeout(async () => {
         try {
-          const pos = await getCurrentWindow().outerPosition();
-          localStorage.setItem("mg_lyrics_pos", JSON.stringify({ x: pos.x, y: pos.y }));
-        } catch {}
+          const win = getCurrentWindow();
+          const [pos, scale] = await Promise.all([win.outerPosition(), win.scaleFactor()]);
+          const s = scale > 0 ? scale : 1;
+          saveOverlayRect(pos.x / s, pos.y / s, s);
+        } catch {
+          /* ignore */
+        }
       }, 500);
     });
 
-    // Listen for live updates from the main player window
-    const unsubUpdate = listen<LyricsPayload>("lyrics-update", (e) => {
-      setInfo(e.payload);
-      if (e.payload.lyrics !== undefined) {
-        setLyricsList(e.payload.lyrics);
+    const listeners = Promise.all([
+      listen<LyricsPayload>("lyrics-sync", (e) => applyAnchor(e.payload)),
+      // Compatibility with a player build that still emits the old event.
+      listen<LyricsPayload>("lyrics-update", (e) => applyAnchor(e.payload)),
+      listen<{ pinned: boolean }>("lyrics-pin-state", (e) => {
+        setIsPinned(e.payload.pinned);
+        getCurrentWindow().setIgnoreCursorEvents(e.payload.pinned).catch(() => {});
+      }),
+      listen<{ theme: string }>("lyrics-theme-state", (e) => setLyricsTheme(e.payload.theme)),
+      listen<{ fontSize: number }>("lyrics-fontsize-state", (e) => {
+        setFontSize(e.payload.fontSize);
+        try { localStorage.setItem(STORAGE_KEYS.lyricsFontSize, String(e.payload.fontSize)); } catch {}
+      }),
+      listen<{ delta: number }>("lyrics-offset-nudge", (e) => {
+        if (typeof e.payload?.delta === "number") {
+          const next = Math.round((offsetRef.current + e.payload.delta) * 10) / 10;
+          offsetRef.current = next;
+          setSyncOffset(next);
+          writeOffset(trackIdRef.current, next);
+        }
+      }),
+    ]);
+
+    // Announce readiness only after every listener is registered, otherwise the
+    // player's immediate reply can be emitted into the void.
+    listeners.then(() => {
+      emit("lyrics-ready", {}).catch(() => {});
+    });
+
+    // Ask the player for a fresh anchor while playing. This keeps the overlay
+    // correct even when the player window is minimised and its own timers are
+    // throttled - the request is answered on message delivery, not on a timer.
+    const resyncTimer = setInterval(() => {
+      if (clockRef.current.isPlaying()) {
+        emit("lyrics-resync", { needLyrics: lyricsRef.current === null }).catch(() => {});
       }
-    });
-
-    // Listen for pin state changes
-    const unsubPin = listen<{ pinned: boolean }>("lyrics-pin-state", (e) => {
-      setIsPinned(e.payload.pinned);
-      getCurrentWindow().setIgnoreCursorEvents(e.payload.pinned).catch(() => {});
-    });
-
-    // Listen for theme changes
-    const unsubTheme = listen<{ theme: string }>("lyrics-theme-state", (e) => {
-      setLyricsTheme(e.payload.theme);
-    });
-
-    // Listen for font size changes from main window
-    const unsubFont = listen<{ fontSize: number }>("lyrics-fontsize-state", (e) => {
-      setFontSize(e.payload.fontSize);
-      localStorage.setItem("mg_lyrics_fontsize", String(e.payload.fontSize));
-    });
-
-    // Listen for lyrics offset nudge from main player shortcuts
-    const unsubNudge = listen<{ delta: number }>("lyrics-offset-nudge", (e) => {
-      if (typeof e.payload?.delta === "number") {
-        setSyncOffset((prev) => {
-          const next = Math.round((prev + e.payload.delta) * 10) / 10;
-          try { localStorage.setItem("mg_lyrics_offset", String(next)); } catch {}
-          return next;
-        });
-      }
-    });
+    }, 5000);
 
     // Global wheel event for Ctrl+Scroll font sizing
     const handleWheel = (e: WheelEvent) => {
       if (e.ctrlKey) {
         e.preventDefault();
         const delta = e.deltaY < 0 ? 2 : -2;
-        setFontSize(prev => {
+        setFontSize((prev) => {
           const next = Math.max(14, Math.min(60, prev + delta));
-          localStorage.setItem("mg_lyrics_fontsize", String(next));
+          try { localStorage.setItem(STORAGE_KEYS.lyricsFontSize, String(next)); } catch {}
           emit("lyrics-fontsize-state", { fontSize: next }).catch(() => {});
           return next;
         });
@@ -127,19 +253,58 @@ export default function LyricsWindow() {
     };
     window.addEventListener("wheel", handleWheel, { passive: false });
 
-    // Notify main window that lyrics window is ready and request current state
-    emit("lyrics-ready", {}).catch(() => {});
+    // Escape closes the overlay while it is in free (interactive) mode
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        getCurrentWindow().close().catch(() => {});
+      }
+    };
+    window.addEventListener("keydown", handleKey);
+
+    // Animation frame loop: the display clock, not the event stream.
+    let raf = 0;
+    const tick = () => {
+      const clock = clockRef.current;
+      const position = clock.positionAt(Date.now()) + offsetRef.current;
+      const lines = lyricsRef.current;
+      const idx = selectLineIndex(lines, position);
+      const state = wordState(lines, idx, position);
+      const key = `${idx}|${state.activeWord}|${state.finished ? 1 : 0}`;
+      if (key !== frameKeyRef.current) {
+        frameKeyRef.current = key;
+        setFrame({
+          idx,
+          activeWord: state.activeWord,
+          elapsed: state.elapsed,
+          lineDuration: state.lineDuration,
+          finished: state.finished,
+        });
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+
+    // The window is created hidden so the transparent webview never flashes
+    // white; show it once this first frame has painted.
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        if (!shownRef.current) {
+          shownRef.current = true;
+          getCurrentWindow().show().catch(() => {});
+        }
+      })
+    );
 
     return () => {
-      unsubMove.then(fn => fn());
-      unsubUpdate.then(fn => fn());
-      unsubPin.then(fn => fn());
-      unsubTheme.then(fn => fn());
-      unsubFont.then(fn => fn());
-      unsubNudge.then(fn => fn());
+      cancelAnimationFrame(raf);
+      clearInterval(resyncTimer);
+      if (positionSaveTimer.current) clearTimeout(positionSaveTimer.current);
       window.removeEventListener("wheel", handleWheel);
+      window.removeEventListener("keydown", handleKey);
+      listeners.then((fns) => fns.forEach((fn) => fn()));
+      unsubMove.then((fn) => fn());
     };
-  }, []);
+  }, [applyAnchor, readOffset, writeOffset]);
 
   const handlePinToggle = (pinned: boolean) => {
     setIsPinned(pinned);
@@ -153,150 +318,103 @@ export default function LyricsWindow() {
   };
 
   const handleFontSize = (delta: number) => {
-    setFontSize(prev => {
+    setFontSize((prev) => {
       const next = Math.max(14, Math.min(60, prev + delta));
-      localStorage.setItem("mg_lyrics_fontsize", String(next));
+      try { localStorage.setItem(STORAGE_KEYS.lyricsFontSize, String(next)); } catch {}
       emit("lyrics-fontsize-state", { fontSize: next }).catch(() => {});
       return next;
     });
   };
 
-  // Compute current lyric line using absolute progress + sync offset
-  const activeLyrics = lyricsList;
-  const currentProgress = Math.max(0, info.progress + syncOffset);
-
-  let idx = -1;
-  if (activeLyrics && activeLyrics.length > 0) {
-    for (let i = activeLyrics.length - 1; i >= 0; i--) {
-      if (currentProgress >= activeLyrics[i].time) {
-        idx = i;
-        break;
-      }
+  // Close this overlay from inside the window (no ACL window-destroy permission needed).
+  const closeOverlay = async () => {
+    try {
+      await safeInvoke("close_overlay_window");
+    } catch {
+      try { await getCurrentWindow().close(); } catch {}
     }
-  }
+  };
 
-  const current  = activeLyrics && idx >= 0 ? activeLyrics[idx] : null;
-  const prev     = activeLyrics && idx > 0 ? activeLyrics[idx - 1] : null;
-  const next     = activeLyrics && idx >= 0 && idx < activeLyrics.length - 1 
-    ? activeLyrics[idx + 1] 
+  // Watchdog: this window is click-through, frameless and hidden from the taskbar, so an
+  // orphaned overlay cannot be dismissed by the user at all. If the main window stops
+  // sending heartbeats (closed, crashed, or never attached), close ourselves.
+  useEffect(() => {
+    let lastBeat = Date.now();
+    const unsubBeat = listen("lyrics-heartbeat", () => { lastBeat = Date.now(); });
+    const unsubClosing = listen("app-closing", () => { void closeOverlay(); });
+    const timer = setInterval(() => {
+      if (Date.now() - lastBeat > 15000) void closeOverlay();
+    }, 2000);
+    return () => {
+      clearInterval(timer);
+      unsubBeat.then(fn => fn());
+      unsubClosing.then(fn => fn());
+    };
+  }, []);
+
+  const handleClose = () => { void closeOverlay(); };
+
+  // Line/word state comes from the frame loop (see `tick` above).
+  const activeLyrics = lyricsList;
+  const { idx, activeWord, elapsed, lineDuration } = frame;
+  const current = activeLyrics && idx >= 0 && idx < activeLyrics.length ? activeLyrics[idx] : null;
+  const prev = activeLyrics && idx > 0 ? activeLyrics[idx - 1] : null;
+  const next = activeLyrics && idx >= 0 && idx < activeLyrics.length - 1
+    ? activeLyrics[idx + 1]
     : (activeLyrics && idx === -1 && activeLyrics.length > 0 ? activeLyrics[0] : null);
-  const nextLine = activeLyrics && idx >= 0 && activeLyrics.length > idx + 1 ? activeLyrics[idx + 1] : null;
-
-  // Word-by-word highlight with duration cap
-  const naturalLineDur = nextLine && current ? nextLine.time - current.time : 4.5;
   const words = current ? current.text.split(" ").filter(Boolean) : [];
-  const cappedLineDur = Math.min(naturalLineDur, Math.max(2.5, words.length * 0.6));
-  const elapsed = current ? Math.max(0, currentProgress - current.time) : 0;
-  const wDur = words.length > 0 ? cappedLineDur / words.length : 1;
-  const activeW = words.length > 0 
-    ? (elapsed >= cappedLineDur ? words.length : Math.min(Math.floor(elapsed / wDur), words.length - 1))
-    : 0;
+  const activeW = activeWord;
+  const cappedLineDur = lineDuration;
 
-  // 10 Themes configs
+  // 4 restrained overlay themes (white or black text over any background, no neon)
   const THEME_CONFIGS: Record<string, any> = {
-    nebula: {
-      fontFamily: "'Outfit', sans-serif",
-      activeColor: "#C084FC",
-      inactiveColor: "rgba(255,255,255,0.28)",
-      outline: "0 0 4px #000, 0 0 4px #000, 0 2px 12px #000, 0 2px 22px rgba(0,0,0,0.9)",
-      glowShadow: "0 0 22px rgba(192,132,252,0.75), 0 0 4px #000, 0 0 4px #000",
-      animationClass: "theme-nebula-active",
-      background: "transparent",
-      borderColor: "rgba(192, 132, 252, 0.4)",
-    },
-    cyberpunk: {
-      fontFamily: "'Orbitron', 'Segoe UI', sans-serif",
-      activeColor: "#00F0FF",
-      inactiveColor: "rgba(0, 240, 255, 0.25)",
-      outline: "0 0 3px #000, 0 0 3px #000, 0 1px 8px #000",
-      glowShadow: "0 0 15px rgba(0, 240, 255, 0.8), 0 0 30px rgba(0, 240, 255, 0.4), 0 0 3px #000",
-      animationClass: "theme-cyberpunk-active",
-      background: "rgba(0, 0, 0, 0.25)",
-      borderColor: "rgba(0, 240, 255, 0.5)",
-    },
-    terminal: {
-      fontFamily: "'Fira Code', 'Courier New', monospace",
-      activeColor: "#FFB000",
-      inactiveColor: "rgba(255, 176, 0, 0.22)",
-      outline: "0 0 2px #000, 0 2px 4px #000",
-      glowShadow: "0 0 8px rgba(255, 176, 0, 0.6), 0 0 2px #000",
-      animationClass: "theme-terminal-active",
-      background: "rgba(5, 12, 5, 0.45)",
-      borderColor: "rgba(255, 176, 0, 0.5)",
-    },
-    elegant: {
-      fontFamily: "'Playfair Display', 'Georgia', serif",
-      activeColor: "#F472B6",
-      inactiveColor: "rgba(255,255,255,0.2)",
-      outline: "0 0 4px #000, 0 1px 8px rgba(0,0,0,0.5)",
-      glowShadow: "0 0 12px rgba(244,114,182,0.5), 0 0 4px #000",
-      animationClass: "theme-elegant-active",
-      background: "transparent",
-      borderColor: "rgba(244, 114, 182, 0.4)",
-    },
-    minimal: {
+    classic: {
       fontFamily: "'Inter', sans-serif",
       activeColor: "#FFFFFF",
-      inactiveColor: "rgba(255,255,255,0.3)",
-      outline: "0 0 5px #000, 0 2px 10px rgba(0,0,0,0.8)",
-      glowShadow: "0 0 10px rgba(255,255,255,0.5), 0 0 5px #000",
-      animationClass: "theme-minimal-active",
+      pastColor: "rgba(255,255,255,0.85)",
+      inactiveColor: "rgba(255,255,255,0.58)",
+      outline: "0 1px 2px rgba(0,0,0,0.45), 0 2px 12px rgba(0,0,0,0.28)",
+      glowShadow: "0 1px 2px rgba(0,0,0,0.5), 0 3px 16px rgba(0,0,0,0.32)",
+      animationClass: "theme-classic-active",
       background: "transparent",
-      borderColor: "rgba(255, 255, 255, 0.3)",
+      borderColor: "rgba(255,255,255,0.25)",
     },
-    emerald: {
-      fontFamily: "'Plus Jakarta Sans', sans-serif",
-      activeColor: "#10B981",
-      inactiveColor: "rgba(16, 185, 129, 0.28)",
-      outline: "0 0 4px #000, 0 0 4px #000, 0 2px 10px rgba(0,0,0,0.9)",
-      glowShadow: "0 0 20px rgba(16, 185, 129, 0.8), 0 0 4px #000",
-      animationClass: "theme-emerald-active",
+    inverse: {
+      fontFamily: "'Inter', sans-serif",
+      activeColor: "#000000",
+      pastColor: "rgba(0,0,0,0.85)",
+      inactiveColor: "rgba(0,0,0,0.58)",
+      outline: "0 1px 2px rgba(255,255,255,0.5), 0 2px 12px rgba(255,255,255,0.3)",
+      glowShadow: "0 1px 2px rgba(255,255,255,0.55), 0 3px 16px rgba(255,255,255,0.35)",
+      animationClass: "theme-inverse-active",
       background: "transparent",
-      borderColor: "rgba(16, 185, 129, 0.4)",
+      borderColor: "rgba(0,0,0,0.25)",
     },
-    sunset: {
-      fontFamily: "'Cinzel', 'Times New Roman', serif",
-      activeColor: "#FF6B35",
-      inactiveColor: "rgba(255, 107, 53, 0.25)",
-      outline: "0 0 4px #000, 0 1px 8px #000",
-      glowShadow: "0 0 18px rgba(255, 107, 53, 0.75), 0 0 4px #000",
-      animationClass: "theme-sunset-active",
+    serif: {
+      fontFamily: "'Playfair Display', 'Georgia', serif",
+      activeColor: "#FFFFFF",
+      pastColor: "rgba(255,255,255,0.85)",
+      inactiveColor: "rgba(255,255,255,0.56)",
+      outline: "0 1px 2px rgba(0,0,0,0.45), 0 2px 12px rgba(0,0,0,0.28)",
+      glowShadow: "0 1px 2px rgba(0,0,0,0.5), 0 3px 16px rgba(0,0,0,0.32)",
+      animationClass: "theme-serif-active",
       background: "transparent",
-      borderColor: "rgba(255, 107, 53, 0.45)",
+      borderColor: "rgba(255,255,255,0.25)",
     },
-    synthwave: {
-      fontFamily: "'Audiowide', cursive, sans-serif",
-      activeColor: "#FF1493",
-      inactiveColor: "rgba(255, 20, 147, 0.25)",
-      outline: "0 0 4px #000, 0 0 8px rgba(0,0,0,0.9)",
-      glowShadow: "0 0 22px rgba(255, 20, 147, 0.85), 0 0 35px rgba(0, 240, 255, 0.4), 0 0 4px #000",
-      animationClass: "theme-synthwave-active",
-      background: "rgba(10, 0, 20, 0.35)",
-      borderColor: "rgba(255, 20, 147, 0.5)",
-    },
-    nordic: {
-      fontFamily: "'Space Grotesk', sans-serif",
-      activeColor: "#38BDF8",
-      inactiveColor: "rgba(56, 189, 248, 0.25)",
-      outline: "0 0 4px #000, 0 2px 10px rgba(0,0,0,0.85)",
-      glowShadow: "0 0 18px rgba(56, 189, 248, 0.75), 0 0 4px #000",
-      animationClass: "theme-nordic-active",
+    mono: {
+      fontFamily: "'Fira Code', 'Courier New', monospace",
+      activeColor: "#FFFFFF",
+      pastColor: "rgba(255,255,255,0.8)",
+      inactiveColor: "rgba(255,255,255,0.54)",
+      outline: "0 1px 2px rgba(0,0,0,0.5), 0 2px 10px rgba(0,0,0,0.3)",
+      glowShadow: "0 1px 2px rgba(0,0,0,0.55), 0 3px 14px rgba(0,0,0,0.34)",
+      animationClass: "theme-mono-active",
       background: "transparent",
-      borderColor: "rgba(56, 189, 248, 0.4)",
-    },
-    tokyo: {
-      fontFamily: "'Rajdhani', sans-serif",
-      activeColor: "#A78BFA",
-      inactiveColor: "rgba(167, 139, 250, 0.25)",
-      outline: "0 0 4px #000, 0 2px 10px #000",
-      glowShadow: "0 0 18px rgba(167, 139, 250, 0.8), 0 0 30px rgba(236, 72, 153, 0.4), 0 0 4px #000",
-      animationClass: "theme-tokyo-active",
-      background: "rgba(5, 5, 18, 0.35)",
-      borderColor: "rgba(167, 139, 250, 0.45)",
+      borderColor: "rgba(255,255,255,0.25)",
     },
   };
 
-  const currentTheme = THEME_CONFIGS[lyricsTheme] ?? THEME_CONFIGS.nebula;
+  const currentTheme = THEME_CONFIGS[lyricsTheme] ?? THEME_CONFIGS.classic;
 
   // Render loading state
   if (activeLyrics === null) {
@@ -307,15 +425,15 @@ export default function LyricsWindow() {
           width: "100vw", height: "100vh",
           display: "flex", flexDirection: "column",
           alignItems: "center", justifyContent: "center",
-          background: !isPinned ? "rgba(10,10,16,0.85)" : currentTheme.background,
-          backdropFilter: !isPinned ? "blur(10px)" : "none",
+          background: !isPinned ? "rgba(14,14,16,0.62)" : currentTheme.background,
+          backdropFilter: !isPinned ? "blur(14px) saturate(110%)" : "none",
           overflow: "hidden",
           padding: !isPinned ? "40px 20px 20px 20px" : "0 20px",
           pointerEvents: !isPinned ? "auto" : "none",
           userSelect: "none",
           fontFamily: currentTheme.fontFamily,
-          border: !isPinned ? `2px dashed ${currentTheme.borderColor}` : "none",
-          borderRadius: !isPinned ? 12 : 0,
+          border: !isPinned ? "1px solid rgba(255,255,255,0.12)" : "none",
+          borderRadius: !isPinned ? 18 : 0,
           position: "relative",
           transition: "all 0.3s ease",
         }}
@@ -325,12 +443,12 @@ export default function LyricsWindow() {
             data-tauri-drag-region="true"
             style={{
               position: "absolute", top: 0, left: 0, right: 0,
-              height: 38, background: "rgba(255,255,255,0.04)",
-              borderBottom: "1px solid rgba(255,255,255,0.08)",
+              height: 38, background: "color-mix(in srgb, var(--text) 4%, transparent)",
+              borderBottom: "1px solid color-mix(in srgb, var(--text) 8%, transparent)",
               display: "flex", alignItems: "center",
               padding: "0 14px",
               fontFamily: "'Inter', sans-serif",
-              fontSize: 11, fontWeight: 700, color: "#fff",
+              fontSize: 11, fontWeight: 700, color: "var(--text)",
               zIndex: 10,
               justifyContent: "space-between",
             }}
@@ -341,14 +459,14 @@ export default function LyricsWindow() {
             </div>
             
             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <span style={{ color: "#5A5D70", marginRight: 4 }}>Theme:</span>
+              <span style={{ color: "var(--text-3)", marginRight: 4 }}>Theme:</span>
               {Object.keys(THEME_CONFIGS).map((t) => (
                 <button
                   key={t}
                   onClick={() => handleThemeChange(t)}
                   style={{
-                    background: lyricsTheme === t ? currentTheme.activeColor : "rgba(255,255,255,0.06)",
-                    border: "none", color: lyricsTheme === t ? "#000" : "#9FA2B4",
+                    background: lyricsTheme === t ? "var(--accent)" : "color-mix(in srgb, var(--text) 6%, transparent)",
+                    border: "none", color: lyricsTheme === t ? "var(--accent-fg)" : "var(--text-2)",
                     padding: "2px 8px", borderRadius: 4,
                     fontSize: 9, fontWeight: 800, cursor: "pointer",
                     textTransform: "uppercase",
@@ -359,12 +477,12 @@ export default function LyricsWindow() {
                 </button>
               ))}
 
-              <span style={{ color: "#5A5D70", marginLeft: 10, marginRight: 4 }}>Font:</span>
+              <span style={{ color: "var(--text-3)", marginLeft: 10, marginRight: 4 }}>Font:</span>
               <button
                 onClick={() => handleFontSize(-2)}
                 style={{
-                  background: "rgba(255,255,255,0.06)",
-                  border: "none", color: "#9FA2B4",
+                  background: "color-mix(in srgb, var(--text) 6%, transparent)",
+                  border: "none", color: "var(--text-2)",
                   width: 20, height: 20, borderRadius: 4,
                   fontSize: 10, fontWeight: 800, cursor: "pointer",
                   display: "inline-flex", alignItems: "center", justifyContent: "center"
@@ -373,12 +491,12 @@ export default function LyricsWindow() {
               >
                 A-
               </button>
-              <span style={{ color: "#FFF", fontSize: 10, minWidth: 24, textAlign: "center" }}>{fontSize}px</span>
+              <span style={{ color: "var(--text)", fontSize: 10, minWidth: 24, textAlign: "center" }}>{fontSize}px</span>
               <button
                 onClick={() => handleFontSize(2)}
                 style={{
-                  background: "rgba(255,255,255,0.06)",
-                  border: "none", color: "#9FA2B4",
+                  background: "color-mix(in srgb, var(--text) 6%, transparent)",
+                  border: "none", color: "var(--text-2)",
                   width: 20, height: 20, borderRadius: 4,
                   fontSize: 10, fontWeight: 800, cursor: "pointer",
                   display: "inline-flex", alignItems: "center", justifyContent: "center"
@@ -392,11 +510,11 @@ export default function LyricsWindow() {
                 onClick={() => handlePinToggle(true)}
                 style={{
                   marginLeft: 10,
-                  background: "#EC4899",
-                  border: "none", color: "#fff",
+                  background: "var(--accent)",
+                  border: "none", color: "var(--accent-fg)",
                   padding: "3px 10px", borderRadius: 6,
                   fontSize: 10, fontWeight: 800, cursor: "pointer",
-                  boxShadow: "0 2px 8px rgba(236,72,153,0.3)",
+                  boxShadow: "0 2px 8px color-mix(in srgb, var(--accent) 30%, transparent)",
                   display: "inline-flex", alignItems: "center", gap: 5,
                 }}
               >
@@ -444,15 +562,15 @@ export default function LyricsWindow() {
           width: "100vw", height: "100vh",
           display: "flex", flexDirection: "column",
           alignItems: "center", justifyContent: "center",
-          background: !isPinned ? "rgba(10,10,16,0.85)" : currentTheme.background,
-          backdropFilter: !isPinned ? "blur(10px)" : "none",
+          background: !isPinned ? "rgba(14,14,16,0.62)" : currentTheme.background,
+          backdropFilter: !isPinned ? "blur(14px) saturate(110%)" : "none",
           overflow: "hidden",
           padding: !isPinned ? "40px 20px 20px 20px" : "0 20px",
           pointerEvents: !isPinned ? "auto" : "none",
           userSelect: "none",
           fontFamily: currentTheme.fontFamily,
-          border: !isPinned ? `2px dashed ${currentTheme.borderColor}` : "none",
-          borderRadius: !isPinned ? 12 : 0,
+          border: !isPinned ? "1px solid rgba(255,255,255,0.12)" : "none",
+          borderRadius: !isPinned ? 18 : 0,
           position: "relative",
           transition: "all 0.3s ease",
         }}
@@ -462,12 +580,12 @@ export default function LyricsWindow() {
             data-tauri-drag-region="true"
             style={{
               position: "absolute", top: 0, left: 0, right: 0,
-              height: 38, background: "rgba(255,255,255,0.04)",
-              borderBottom: "1px solid rgba(255,255,255,0.08)",
+              height: 38, background: "color-mix(in srgb, var(--text) 4%, transparent)",
+              borderBottom: "1px solid color-mix(in srgb, var(--text) 8%, transparent)",
               display: "flex", alignItems: "center", justifyContent: "space-between",
               padding: "0 14px",
               fontFamily: "'Inter', sans-serif",
-              fontSize: 11, fontWeight: 700, color: "#fff",
+              fontSize: 11, fontWeight: 700, color: "var(--text)",
               zIndex: 10,
             }}
           >
@@ -477,14 +595,14 @@ export default function LyricsWindow() {
             </div>
             
             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <span style={{ color: "#5A5D70", marginRight: 4 }}>Theme:</span>
+              <span style={{ color: "var(--text-3)", marginRight: 4 }}>Theme:</span>
               {Object.keys(THEME_CONFIGS).map((t) => (
                 <button
                   key={t}
                   onClick={() => handleThemeChange(t)}
                   style={{
-                    background: lyricsTheme === t ? currentTheme.activeColor : "rgba(255,255,255,0.06)",
-                    border: "none", color: lyricsTheme === t ? "#000" : "#9FA2B4",
+                    background: lyricsTheme === t ? "var(--accent)" : "color-mix(in srgb, var(--text) 6%, transparent)",
+                    border: "none", color: lyricsTheme === t ? "var(--accent-fg)" : "var(--text-2)",
                     padding: "2px 8px", borderRadius: 4,
                     fontSize: 9, fontWeight: 800, cursor: "pointer",
                     textTransform: "uppercase",
@@ -495,12 +613,12 @@ export default function LyricsWindow() {
                 </button>
               ))}
 
-              <span style={{ color: "#5A5D70", marginLeft: 10, marginRight: 4 }}>Font:</span>
+              <span style={{ color: "var(--text-3)", marginLeft: 10, marginRight: 4 }}>Font:</span>
               <button
                 onClick={() => handleFontSize(-2)}
                 style={{
-                  background: "rgba(255,255,255,0.06)",
-                  border: "none", color: "#9FA2B4",
+                  background: "color-mix(in srgb, var(--text) 6%, transparent)",
+                  border: "none", color: "var(--text-2)",
                   width: 20, height: 20, borderRadius: 4,
                   fontSize: 10, fontWeight: 800, cursor: "pointer",
                   display: "inline-flex", alignItems: "center", justifyContent: "center"
@@ -509,12 +627,12 @@ export default function LyricsWindow() {
               >
                 A-
               </button>
-              <span style={{ color: "#FFF", fontSize: 10, minWidth: 24, textAlign: "center" }}>{fontSize}px</span>
+              <span style={{ color: "var(--text)", fontSize: 10, minWidth: 24, textAlign: "center" }}>{fontSize}px</span>
               <button
                 onClick={() => handleFontSize(2)}
                 style={{
-                  background: "rgba(255,255,255,0.06)",
-                  border: "none", color: "#9FA2B4",
+                  background: "color-mix(in srgb, var(--text) 6%, transparent)",
+                  border: "none", color: "var(--text-2)",
                   width: 20, height: 20, borderRadius: 4,
                   fontSize: 10, fontWeight: 800, cursor: "pointer",
                   display: "inline-flex", alignItems: "center", justifyContent: "center"
@@ -528,11 +646,11 @@ export default function LyricsWindow() {
                 onClick={() => handlePinToggle(true)}
                 style={{
                   marginLeft: 10,
-                  background: "#EC4899",
-                  border: "none", color: "#fff",
+                  background: "var(--accent)",
+                  border: "none", color: "var(--accent-fg)",
                   padding: "3px 10px", borderRadius: 6,
                   fontSize: 10, fontWeight: 800, cursor: "pointer",
-                  boxShadow: "0 2px 8px rgba(236,72,153,0.3)",
+                  boxShadow: "0 2px 8px color-mix(in srgb, var(--accent) 30%, transparent)",
                   display: "inline-flex", alignItems: "center", gap: 5,
                 }}
               >
@@ -577,16 +695,16 @@ export default function LyricsWindow() {
         width: "100vw", height: "100vh",
         display: "flex", flexDirection: "column",
         alignItems: "center", justifyContent: "center",
-        background: !isPinned ? "rgba(10,10,16,0.85)" : currentTheme.background,
-        backdropFilter: !isPinned ? "blur(10px)" : "none",
+        background: !isPinned ? "rgba(14,14,16,0.62)" : currentTheme.background,
+        backdropFilter: !isPinned ? "blur(14px) saturate(110%)" : "none",
         overflow: "hidden",
         padding: !isPinned ? "40px 20px 20px 20px" : "0 20px",
         pointerEvents: !isPinned ? "auto" : "none",
         userSelect: "none",
         gap: 10,
         fontFamily: currentTheme.fontFamily,
-        border: !isPinned ? `2px dashed ${currentTheme.borderColor}` : "none",
-        borderRadius: !isPinned ? 12 : 0,
+        border: !isPinned ? "1px solid rgba(255,255,255,0.12)" : "none",
+        borderRadius: !isPinned ? 18 : 0,
         position: "relative",
         transition: "all 0.3s ease",
       }}
@@ -597,12 +715,12 @@ export default function LyricsWindow() {
           data-tauri-drag-region="true"
           style={{
             position: "absolute", top: 0, left: 0, right: 0,
-            height: 38, background: "rgba(255,255,255,0.04)",
-            borderBottom: "1px solid rgba(255,255,255,0.08)",
+            height: 38, background: "color-mix(in srgb, var(--text) 4%, transparent)",
+            borderBottom: "1px solid color-mix(in srgb, var(--text) 8%, transparent)",
             display: "flex", alignItems: "center", justifyContent: "space-between",
             padding: "0 14px",
             fontFamily: "'Inter', sans-serif",
-            fontSize: 11, fontWeight: 700, color: "#fff",
+            fontSize: 11, fontWeight: 700, color: "var(--text)",
             zIndex: 10,
           }}
         >
@@ -613,14 +731,14 @@ export default function LyricsWindow() {
           
           {/* Quick theme toggles */}
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <span style={{ color: "#5A5D70", marginRight: 4 }}>Theme:</span>
+            <span style={{ color: "var(--text-3)", marginRight: 4 }}>Theme:</span>
             {Object.keys(THEME_CONFIGS).map((t) => (
               <button
                 key={t}
                 onClick={() => handleThemeChange(t)}
                 style={{
-                  background: lyricsTheme === t ? currentTheme.activeColor : "rgba(255,255,255,0.06)",
-                  border: "none", color: lyricsTheme === t ? "#000" : "#9FA2B4",
+                  background: lyricsTheme === t ? "var(--accent)" : "color-mix(in srgb, var(--text) 6%, transparent)",
+                  border: "none", color: lyricsTheme === t ? "var(--accent-fg)" : "var(--text-2)",
                   padding: "2px 8px", borderRadius: 4,
                   fontSize: 9, fontWeight: 800, cursor: "pointer",
                   textTransform: "uppercase",
@@ -631,12 +749,12 @@ export default function LyricsWindow() {
               </button>
             ))}
 
-            <span style={{ color: "#5A5D70", marginLeft: 10, marginRight: 4 }}>Font:</span>
+            <span style={{ color: "var(--text-3)", marginLeft: 10, marginRight: 4 }}>Font:</span>
             <button
               onClick={() => handleFontSize(-2)}
               style={{
-                background: "rgba(255,255,255,0.06)",
-                border: "none", color: "#9FA2B4",
+                background: "color-mix(in srgb, var(--text) 6%, transparent)",
+                border: "none", color: "var(--text-2)",
                 width: 20, height: 20, borderRadius: 4,
                 fontSize: 10, fontWeight: 800, cursor: "pointer",
                 display: "inline-flex", alignItems: "center", justifyContent: "center"
@@ -645,12 +763,12 @@ export default function LyricsWindow() {
             >
               A-
             </button>
-            <span style={{ color: "#FFF", fontSize: 10, minWidth: 24, textAlign: "center" }}>{fontSize}px</span>
+            <span style={{ color: "var(--text)", fontSize: 10, minWidth: 24, textAlign: "center" }}>{fontSize}px</span>
             <button
               onClick={() => handleFontSize(2)}
               style={{
-                background: "rgba(255,255,255,0.06)",
-                border: "none", color: "#9FA2B4",
+                background: "color-mix(in srgb, var(--text) 6%, transparent)",
+                border: "none", color: "var(--text-2)",
                 width: 20, height: 20, borderRadius: 4,
                 fontSize: 10, fontWeight: 800, cursor: "pointer",
                 display: "inline-flex", alignItems: "center", justifyContent: "center"
@@ -660,12 +778,12 @@ export default function LyricsWindow() {
               A+
             </button>
 
-            <span style={{ color: "#5A5D70", marginLeft: 10, marginRight: 4 }}>Sync:</span>
+            <span style={{ color: "var(--text-3)", marginLeft: 10, marginRight: 4 }}>Sync:</span>
             <button
               onClick={() => handleOffsetChange(-0.5)}
               style={{
-                background: "rgba(255,255,255,0.06)",
-                border: "none", color: "#9FA2B4",
+                background: "color-mix(in srgb, var(--text) 6%, transparent)",
+                border: "none", color: "var(--text-2)",
                 padding: "2px 6px", borderRadius: 4,
                 fontSize: 10, fontWeight: 800, cursor: "pointer",
               }}
@@ -679,8 +797,8 @@ export default function LyricsWindow() {
             <button
               onClick={() => handleOffsetChange(0.5)}
               style={{
-                background: "rgba(255,255,255,0.06)",
-                border: "none", color: "#9FA2B4",
+                background: "color-mix(in srgb, var(--text) 6%, transparent)",
+                border: "none", color: "var(--text-2)",
                 padding: "2px 6px", borderRadius: 4,
                 fontSize: 10, fontWeight: 800, cursor: "pointer",
               }}
@@ -690,14 +808,14 @@ export default function LyricsWindow() {
             </button>
             {syncOffset !== 0 && (
               <button
-                onClick={() => setSyncOffset(0)}
+                onClick={() => setOffsetFor(0)}
                 style={{
                   background: "transparent",
                   border: "none", color: "#EF4444",
                   fontSize: 9, fontWeight: 700, cursor: "pointer",
                   padding: "2px 4px",
                 }}
-                title="Reset sync offset"
+                title="Reset sync offset for this track"
               >
                 Reset
               </button>
@@ -707,11 +825,11 @@ export default function LyricsWindow() {
               onClick={() => handlePinToggle(true)}
               style={{
                 marginLeft: 10,
-                background: "#EC4899",
-                border: "none", color: "#fff",
+                background: "var(--accent)",
+                border: "none", color: "var(--accent-fg)",
                 padding: "3px 10px", borderRadius: 6,
                 fontSize: 10, fontWeight: 800, cursor: "pointer",
-                boxShadow: "0 2px 8px rgba(236,72,153,0.3)",
+                boxShadow: "0 2px 8px color-mix(in srgb, var(--accent) 30%, transparent)",
                 display: "inline-flex", alignItems: "center", gap: 5,
               }}
             >
@@ -720,6 +838,21 @@ export default function LyricsWindow() {
                 <path d="M7 11V7a5 5 0 0 1 10 0v4" />
               </svg>
               <span>Pin Overlay</span>
+            </button>
+
+            <button
+              onClick={handleClose}
+              title="Close overlay (or press Esc)"
+              style={{
+                marginLeft: 6,
+                background: "rgba(255,255,255,0.06)",
+                border: "none", color: "#9FA2B4",
+                width: 22, height: 22, borderRadius: 6,
+                fontSize: 12, fontWeight: 800, cursor: "pointer",
+                display: "inline-flex", alignItems: "center", justifyContent: "center",
+              }}
+            >
+              ✕
             </button>
           </div>
         </div>
@@ -732,7 +865,7 @@ export default function LyricsWindow() {
         textShadow: currentTheme.outline,
         textAlign: "center",
         opacity: prev ? 1 : 0,
-        transition: "opacity 0.4s ease",
+        transition: "opacity 0.5s cubic-bezier(0.22,1,0.36,1)",
         whiteSpace: "nowrap",
         overflow: "hidden",
         textOverflow: "ellipsis",
@@ -743,7 +876,7 @@ export default function LyricsWindow() {
       </div>
 
       {/* Current line — word by word highlight */}
-      <div style={{
+      <div key={idx} className="lyric-line-active" style={{
         display: "flex", flexWrap: "wrap",
         justifyContent: "center", alignItems: "baseline",
         gap: "0 0.25em", maxWidth: "100%",
@@ -756,17 +889,14 @@ export default function LyricsWindow() {
             return (
               <span 
                 key={`${idx}-${wi}`} 
-                className={isActive ? currentTheme.animationClass : ""}
+                className={`lyric-word ${isActive ? currentTheme.animationClass : ""}`}
                 style={{
                   display: "inline-block",
                   fontSize:    isActive ? fontSize : Math.max(12, Math.round(fontSize * 0.9)),
                   fontWeight:  isActive ? 900 : isPast ? 700 : 600,
-                  color:       isActive ? currentTheme.activeColor : isPast ? "rgba(255,255,255,0.9)" : currentTheme.inactiveColor,
+                  color:       isActive ? currentTheme.activeColor : isPast ? currentTheme.pastColor : currentTheme.inactiveColor,
                   textShadow:  isActive ? currentTheme.glowShadow : currentTheme.outline,
-                  transform:   isActive && lyricsTheme !== "cyberpunk" && lyricsTheme !== "terminal" && lyricsTheme !== "elegant" && lyricsTheme !== "minimal"
-                    ? "translateY(-2px) scale(1.05)" 
-                    : "scale(1)",
-                  transition:  "all 0.2s ease",
+                  transform:   isActive ? "translateY(-1px) scale(1.03)" : "scale(1)",
                   letterSpacing: "-0.01em",
                   lineHeight: 1.2,
                 }}
@@ -805,7 +935,7 @@ export default function LyricsWindow() {
         textShadow: currentTheme.outline,
         textAlign: "center",
         opacity: next ? 1 : 0,
-        transition: "opacity 0.4s ease",
+        transition: "opacity 0.5s cubic-bezier(0.22,1,0.36,1)",
         whiteSpace: "nowrap",
         overflow: "hidden",
         textOverflow: "ellipsis",

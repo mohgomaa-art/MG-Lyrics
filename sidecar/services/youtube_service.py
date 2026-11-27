@@ -6,14 +6,22 @@ def extract_playlist(url: str) -> dict:
         "quiet": True,
         "no_warnings": True,
         "extract_flat": True,
+        # Fail fast instead of hanging forever on a dead connection.
+        "socket_timeout": 20,
     }
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=False)
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+    except yt_dlp.utils.DownloadError as e:
+        raise ValueError(f"Could not extract YouTube playlist: {e}") from e
 
-        if info.get("_type") != "playlist":
-            raise ValueError("URL is not a playlist")
+    if info is None:
+        raise ValueError("Could not extract YouTube playlist (empty result)")
 
-        entries = list(info.get("entries") or [])
+    if info.get("_type") != "playlist":
+        raise ValueError("URL is not a playlist")
+
+    entries = list(info.get("entries") or [])
 
     return {
         "id": info.get("id"),
@@ -28,6 +36,6 @@ def extract_playlist(url: str) -> dict:
                 "duration_seconds": entry.get("duration"),
             }
             for entry in entries
-            if entry.get("id")
+            if entry and entry.get("id")
         ],
     }

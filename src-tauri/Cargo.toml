@@ -1,8 +1,8 @@
 [package]
 name = "lyrics-temp"
 version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
+description = "MG Lyrics Player"
+authors = ["MG"]
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -27,3 +27,9 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 tokio = { version = "1", features = ["full"] }
 urlencoding = "2"
 
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true

@@ -5,8 +5,10 @@ from services.youtube_service import extract_playlist
 router = APIRouter()
 
 
+# Plain `def` (not `async def`): extraction is blocking, so FastAPI must run
+# this in its threadpool instead of blocking the event loop.
 @router.get("/playlists/youtube")
-async def get_youtube_playlist(url: str = Query(..., description="Public YouTube playlist URL")):
+def get_youtube_playlist(url: str = Query(..., description="Public YouTube playlist URL")):
     try:
         return extract_playlist(url)
     except ValueError as e:

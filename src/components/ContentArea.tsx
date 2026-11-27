@@ -1,8 +1,11 @@
-import { useState, useMemo, useEffect, useRef } from "react";
+import { useState, useMemo, useEffect, useRef, memo } from "react";
 import type { Track } from "./PlayerBar";
 import type { Playlist } from "../App";
+import { useCuratedPlaylists, CATEGORY_LABELS } from "../data/curatedPlaylists";
+export type { CuratedPlaylistItem } from "../data/curatedPlaylists";
 import type { MGProvider } from "../types/track";
-import { safeInvoke as invoke, safeConvertFileSrc as convertFileSrc } from "../utils/tauriBridge";
+import { safeInvoke as invoke, safeConvertFileSrc as convertFileSrc, safeListen } from "../utils/tauriBridge";
+import { STORAGE_KEYS, DEFAULT_DISCOVER_QUERY } from "../config";
 
 interface ContentAreaProps {
   tracks: Track[];
@@ -13,13 +16,13 @@ interface ContentAreaProps {
   playlists: Playlist[];
   onNavigate: (view: string) => void;
   onSyncPlaylist: (playlist: Playlist) => void;
-  onAddLocalTracks: (tracks: Track[]) => void;
+  onAddLocalTracks: (tracks: Track[], opts?: { keepUrlDuplicates?: boolean }) => void;
   onAddTrackToPlaylist?: (playlistId: string, track: Track) => void;
 }
 
 const GRADIENTS = [
-  "#8A2BE2,#4A0E4E", "#FF007F,#70003C", "#00F0FF,#004E7C", "#1DB954,#0B4E22",
-  "#FF8C00,#5A2A00", "#FF4500,#4E1400", "#8A2BE2,#00F0FF", "#FF007F,#00F0FF",
+  "#3a3a3a,#141414", "#2e2e2e,#0f0f0f", "#444444,#1a1a1a", "#333333,#111111",
+  "#3d3d3d,#161616", "#2a2a2a,#0c0c0c", "#484848,#1c1c1c", "#353535,#121212",
 ];
 
 function makeCover(idx: number, title: string): string {
@@ -47,7 +50,7 @@ const PLATFORM_COLORS: Record<string, string> = {
   spotify: "#1DB954",
   youtube: "#FF0000",
   soundcloud: "#FF5500",
-  local: "#8A2BE2",
+  local: "var(--accent)",
 };
 
 export interface UrlAnalysis {
@@ -73,7 +76,7 @@ export function isUrlQuery(rawQuery: string): boolean {
 export function analyzeSearchQuery(rawQuery: string): UrlAnalysis {
   const q = rawQuery.trim();
   if (!isUrlQuery(q)) {
-    return { isUrl: false, platform: null, kind: "unknown", label: "", color: "#8A2BE2" };
+    return { isUrl: false, platform: null, kind: "unknown", label: "", color: "var(--accent)" };
   }
 
   // Spotify
@@ -109,560 +112,10 @@ export function analyzeSearchQuery(rawQuery: string): UrlAnalysis {
     return { isUrl: true, platform: "soundcloud", kind: "track", label: "SoundCloud Track", color: "#FF5500" };
   }
 
-  return { isUrl: true, platform: "generic", kind: "unknown", label: "Web Audio Link", color: "#8A2BE2" };
+  return { isUrl: true, platform: "generic", kind: "unknown", label: "Web Audio Link", color: "var(--accent)" };
 }
 
-const SPOTIFY_FEATURED = [
-  {
-    title: "Today's Top Hits",
-    desc: "The biggest songs worldwide across pop and global charts.",
-    query: "Today's Top Hits",
-    url: "https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M",
-    color: "#1DB954",
-  },
-  {
-    title: "Global Viral Hits",
-    desc: "Trending viral audio tracks and streaming sensations.",
-    query: "Global Viral 50",
-    url: "https://open.spotify.com/playlist/37i9dQZEVXbLiRSasKsNU9",
-    color: "#10b981",
-  },
-  {
-    title: "Rock Classics",
-    desc: "Timeless guitar solos and anthems from legendary bands.",
-    query: "Rock Classics",
-    url: "https://open.spotify.com/playlist/37i9dQZF1DWXRqgorJj26U",
-    color: "#b91c1c",
-  },
-  {
-    title: "Pop Rising",
-    desc: "The next generation of pop superstars and fresh melodies.",
-    query: "Pop Rising",
-    url: "https://open.spotify.com/playlist/37i9dQZF1DWUa8ZRTfalHk",
-    color: "#8A2BE2",
-  },
-];
 
-const YTMUSIC_FEATURED = [
-  {
-    title: "Global Top Music Videos",
-    desc: "Official music videos and #1 trending hits across YouTube Music.",
-    query: "Top Global Music Videos Latest Releases",
-    url: "Top Global Music Videos Latest Releases",
-    color: "#FF0000",
-  },
-  {
-    title: "Lofi Beats To Relax / Study",
-    desc: "Chillhop and soothing lo-fi beats stream for focus and study.",
-    query: "lofi hip hop radio beats to relax study to",
-    url: "lofi hip hop radio beats to relax study to",
-    color: "#6366f1",
-  },
-  {
-    title: "EDM Festival Hits",
-    desc: "High-energy festival tracks, mainstage drops, and house beats.",
-    query: "top edm festival dance hits fresh",
-    url: "top edm festival dance hits fresh",
-    color: "#06b6d4",
-  },
-  {
-    title: "Acoustic Coffeehouse",
-    desc: "Gentle acoustic guitar melodies, vocals, and soft indie folk.",
-    query: "acoustic chill coffeehouse hits",
-    url: "acoustic chill coffeehouse hits",
-    color: "#d97706",
-  },
-];
-
-const SOUNDCLOUD_FEATURED = [
-  {
-    title: "SoundCloud Chill Electronic",
-    desc: "Atmospheric downtempo, future bass, and ambient soundscapes.",
-    query: "sc:chill electronic beats",
-    url: "sc:chill electronic beats",
-    color: "#FF5500",
-  },
-  {
-    title: "Underground Lo-Fi Beats",
-    desc: "Raw vinyl dust, MPC samples, and late-night underground lo-fi.",
-    query: "sc:lo-fi underground beats",
-    url: "sc:lo-fi underground beats",
-    color: "#f59e0b",
-  },
-  {
-    title: "SoundCloud Trending Fresh",
-    desc: "Independent artist releases gaining organic viral traction.",
-    query: "sc:top trending new tracks",
-    url: "sc:top trending new tracks",
-    color: "#ec4899",
-  },
-  {
-    title: "Indie Discoveries",
-    desc: "Bedroom pop, indie singer-songwriters, and melodic creations.",
-    query: "sc:indie acoustic discoveries",
-    url: "sc:indie acoustic discoveries",
-    color: "#14b8a6",
-  },
-];
-
-export interface CuratedPlaylistItem {
-  id: string;
-  title: string;
-  desc: string;
-  provider: "spotify" | "youtube" | "soundcloud";
-  category: "charts" | "pop" | "hiphop" | "rock" | "edm" | "chill" | "latin" | "decades";
-  url: string;
-  color: string;
-  badge: string;
-  gradient: string;
-}
-
-export const TOP_PLAYLISTS_CATALOG: CuratedPlaylistItem[] = [
-  // --- CHARTS & TOP HITS ---
-  {
-    id: "sp-top-hits",
-    title: "Today's Top Hits",
-    desc: "The biggest songs worldwide across pop and global charts.",
-    provider: "spotify",
-    category: "charts",
-    url: "https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M",
-    color: "#1DB954",
-    badge: "Spotify #1",
-    gradient: "linear-gradient(135deg, #1DB954, #0b381a)",
-  },
-  {
-    id: "sp-global-50",
-    title: "Top 50 - Global",
-    desc: "Daily update of the most played tracks worldwide on Spotify.",
-    provider: "spotify",
-    category: "charts",
-    url: "https://open.spotify.com/playlist/37i9dQZEVXbMDoHDwVN2tF",
-    color: "#1DB954",
-    badge: "Global Chart",
-    gradient: "linear-gradient(135deg, #10b981, #064e3b)",
-  },
-  {
-    id: "sp-usa-50",
-    title: "Top 50 - USA",
-    desc: "The most streamed tracks in the United States right now.",
-    provider: "spotify",
-    category: "charts",
-    url: "https://open.spotify.com/playlist/37i9dQZEVXbLRQDuF5jeBp",
-    color: "#1DB954",
-    badge: "US Top 50",
-    gradient: "linear-gradient(135deg, #3b82f6, #1e3a8a)",
-  },
-  {
-    id: "sp-uk-50",
-    title: "Top 50 - United Kingdom",
-    desc: "The official top trending and streamed songs across the UK.",
-    provider: "spotify",
-    category: "charts",
-    url: "https://open.spotify.com/playlist/37i9dQZEVXbLnolsZ8PSNw",
-    color: "#1DB954",
-    badge: "UK Chart",
-    gradient: "linear-gradient(135deg, #6366f1, #312e81)",
-  },
-  {
-    id: "sp-viral-50",
-    title: "Viral 50 - Global",
-    desc: "Trending viral audio tracks, internet sensations, and breakout songs.",
-    provider: "spotify",
-    category: "charts",
-    url: "https://open.spotify.com/playlist/37i9dQZEVXbLiRSasKsNU9",
-    color: "#10b981",
-    badge: "Viral Hits",
-    gradient: "linear-gradient(135deg, #059669, #022c22)",
-  },
-  {
-    id: "yt-billboard-100",
-    title: "Billboard Hot 100",
-    desc: "Top 100 songs across all genres from the official Billboard chart.",
-    provider: "youtube",
-    category: "charts",
-    url: "Billboard Hot 100 Top Songs Official Audio",
-    color: "#FF0000",
-    badge: "Billboard",
-    gradient: "linear-gradient(135deg, #FF0000, #7f1d1d)",
-  },
-  {
-    id: "yt-top-100-global",
-    title: "YouTube Music Top 100 Global",
-    desc: "The most played official music videos and chart-toppers globally.",
-    provider: "youtube",
-    category: "charts",
-    url: "YouTube Music Top 100 Songs Global Chart",
-    color: "#FF0000",
-    badge: "YT Charts",
-    gradient: "linear-gradient(135deg, #dc2626, #450a0a)",
-  },
-  {
-    id: "yt-trending-music",
-    title: "Trending Music Hits Worldwide",
-    desc: "What the world is listening to right now across YouTube Music.",
-    provider: "youtube",
-    category: "charts",
-    url: "Trending Music Hits Worldwide Official",
-    color: "#FF0000",
-    badge: "Trending",
-    gradient: "linear-gradient(135deg, #ef4444, #991b1b)",
-  },
-
-  // --- POP & VIRAL ---
-  {
-    id: "sp-pop-rising",
-    title: "Pop Rising",
-    desc: "The next generation of pop superstars and fresh hook-heavy melodies.",
-    provider: "spotify",
-    category: "pop",
-    url: "https://open.spotify.com/playlist/37i9dQZF1DWUa8ZRTfalHk",
-    color: "#8A2BE2",
-    badge: "Pop Superstars",
-    gradient: "linear-gradient(135deg, #8A2BE2, #4A0E4E)",
-  },
-  {
-    id: "sp-mega-hit-mix",
-    title: "Mega Hit Mix",
-    desc: "A mega blend of the decade's biggest pop anthems and radio staples.",
-    provider: "spotify",
-    category: "pop",
-    url: "https://open.spotify.com/playlist/37i9dQZF1DXbYM3nMM0oPk",
-    color: "#ec4899",
-    badge: "Mega Pop",
-    gradient: "linear-gradient(135deg, #ec4899, #831843)",
-  },
-  {
-    id: "sp-hit-rewind",
-    title: "Hit Rewind",
-    desc: "Modern pop classics and unforgettable sing-along favorites.",
-    provider: "spotify",
-    category: "pop",
-    url: "https://open.spotify.com/playlist/37i9dQZF1DX0s5k0059x7W",
-    color: "#f43f5e",
-    badge: "Pop Rewind",
-    gradient: "linear-gradient(135deg, #f43f5e, #881337)",
-  },
-  {
-    id: "yt-pop-hits-latest",
-    title: "Today's Top Pop Hits",
-    desc: "Non-stop top 40 pop hits and infectious danceable singles.",
-    provider: "youtube",
-    category: "pop",
-    url: "Top 40 Pop Hits Official Audio Today",
-    color: "#FF0000",
-    badge: "Pop Hits",
-    gradient: "linear-gradient(135deg, #e11d48, #4c0519)",
-  },
-
-  // --- HIP-HOP & R&B ---
-  {
-    id: "sp-rapcaviar",
-    title: "RapCaviar",
-    desc: "The heavyweight hip-hop playlist featuring Kendrick, Drake, Future.",
-    provider: "spotify",
-    category: "hiphop",
-    url: "https://open.spotify.com/playlist/37i9dQZF1DX0XUsuxWHRQd",
-    color: "#f59e0b",
-    badge: "Rap Royalty",
-    gradient: "linear-gradient(135deg, #f59e0b, #78350f)",
-  },
-  {
-    id: "sp-get-turnt",
-    title: "Get Turnt",
-    desc: "High-octane trap anthems, heavy basslines, and energy bangers.",
-    provider: "spotify",
-    category: "hiphop",
-    url: "https://open.spotify.com/playlist/37i9dQZF1DWY4xHQp97NaN",
-    color: "#d97706",
-    badge: "Trap Heavy",
-    gradient: "linear-gradient(135deg, #d97706, #451a03)",
-  },
-  {
-    id: "sp-are-and-be",
-    title: "Are & Be (R&B Hits)",
-    desc: "Smooth modern R&B, soul vocal harmonies, and late-night grooves.",
-    provider: "spotify",
-    category: "hiphop",
-    url: "https://open.spotify.com/playlist/37i9dQZF1DX4SBhb3fqAp5",
-    color: "#8b5cf6",
-    badge: "R&B Soul",
-    gradient: "linear-gradient(135deg, #8b5cf6, #4c1d95)",
-  },
-  {
-    id: "yt-hiphop-trap",
-    title: "Hip Hop & Trap Bangers",
-    desc: "Hard-hitting 808s, iconic verses, and chart-dominating street heat.",
-    provider: "youtube",
-    category: "hiphop",
-    url: "Top Hip Hop and Trap Hits Official Audio Latest",
-    color: "#FF0000",
-    badge: "Trap Heat",
-    gradient: "linear-gradient(135deg, #b45309, #292524)",
-  },
-
-  // --- ROCK & ALTERNATIVE ---
-  {
-    id: "sp-rock-classics",
-    title: "Rock Classics",
-    desc: "Timeless guitar solos and anthems from Queen, AC/DC, and Zeppelin.",
-    provider: "spotify",
-    category: "rock",
-    url: "https://open.spotify.com/playlist/37i9dQZF1DWXRqgorJj26U",
-    color: "#b91c1c",
-    badge: "Rock Legends",
-    gradient: "linear-gradient(135deg, #b91c1c, #450a0a)",
-  },
-  {
-    id: "sp-rock-this",
-    title: "Rock This",
-    desc: "The absolute best new alternative rock, grunge, and indie rock.",
-    provider: "spotify",
-    category: "rock",
-    url: "https://open.spotify.com/playlist/37i9dQZF1DX82GYcclJ3Ug",
-    color: "#c026d3",
-    badge: "Alt Rock",
-    gradient: "linear-gradient(135deg, #c026d3, #701a75)",
-  },
-  {
-    id: "sp-alternative-90s",
-    title: "Alternative 90s",
-    desc: "Nirvana, Pearl Jam, Oasis, Radiohead, and the grunge revolution.",
-    provider: "spotify",
-    category: "rock",
-    url: "https://open.spotify.com/playlist/37i9dQZF1DX1rVvRgjXZwF",
-    color: "#0284c7",
-    badge: "90s Alt",
-    gradient: "linear-gradient(135deg, #0284c7, #082f49)",
-  },
-  {
-    id: "yt-rock-legends",
-    title: "Best Rock Songs Of All Time",
-    desc: "Classic guitar riffs, soaring vocals, and immortal stadium rock.",
-    provider: "youtube",
-    category: "rock",
-    url: "Best Classic Rock Songs Of All Time Official Audio",
-    color: "#FF0000",
-    badge: "Immortal Rock",
-    gradient: "linear-gradient(135deg, #991b1b, #18181b)",
-  },
-
-  // --- EDM & DANCE ---
-  {
-    id: "sp-mint-edm",
-    title: "mint - EDM Hits",
-    desc: "World's biggest electronic, house, and festival dance anthems.",
-    provider: "spotify",
-    category: "edm",
-    url: "https://open.spotify.com/playlist/37i9dQZF1DX4dyzvuaRJ0n",
-    color: "#06b6d4",
-    badge: "Festival EDM",
-    gradient: "linear-gradient(135deg, #06b6d4, #083344)",
-  },
-  {
-    id: "sp-beast-mode",
-    title: "Beast Mode EDM",
-    desc: "Maximum energy EDM, hard bass, and workout adrenaline.",
-    provider: "spotify",
-    category: "edm",
-    url: "https://open.spotify.com/playlist/37i9dQZF1DX76Wlfdnj7AP",
-    color: "#e11d48",
-    badge: "Gym EDM",
-    gradient: "linear-gradient(135deg, #e11d48, #4c0519)",
-  },
-  {
-    id: "sp-dance-pop",
-    title: "Dance Pop Hits",
-    desc: "Club-ready dance pop anthems and peak-time party tracks.",
-    provider: "spotify",
-    category: "edm",
-    url: "https://open.spotify.com/playlist/37i9dQZF1DX2enYKN9Jy85",
-    color: "#14b8a6",
-    badge: "Dance Pop",
-    gradient: "linear-gradient(135deg, #14b8a6, #134e4a)",
-  },
-  {
-    id: "yt-edm-festival",
-    title: "EDM Festival Mega Mix",
-    desc: "Tomorrowland mainstage drops, progressive house, and electrifying beats.",
-    provider: "youtube",
-    category: "edm",
-    url: "top edm festival dance hits fresh releases",
-    color: "#FF0000",
-    badge: "Mainstage",
-    gradient: "linear-gradient(135deg, #0284c7, #00F0FF)",
-  },
-  {
-    id: "yt-gaming-ncs",
-    title: "Gaming NCS Music Mix",
-    desc: "Epic electronic gaming beats, dubstep drops, and synth anthems.",
-    provider: "youtube",
-    category: "edm",
-    url: "Best Gaming Music NCS Electronic Trap Dubstep",
-    color: "#FF0000",
-    badge: "Gaming Beats",
-    gradient: "linear-gradient(135deg, #7c3aed, #00F0FF)",
-  },
-
-  // --- LO-FI, FOCUS & CHILL ---
-  {
-    id: "sp-deep-focus",
-    title: "Deep Focus",
-    desc: "Atmospheric ambient soundscapes and post-rock for deep concentration.",
-    provider: "spotify",
-    category: "chill",
-    url: "https://open.spotify.com/playlist/37i9dQZF1DWZeKCadgRdKQ",
-    color: "#059669",
-    badge: "Deep Focus",
-    gradient: "linear-gradient(135deg, #059669, #022c22)",
-  },
-  {
-    id: "sp-lofi-cafe",
-    title: "Lo-Fi Cafe",
-    desc: "Warm vinyl dust, cozy coffeehouse instrumental beats and soft jazz.",
-    provider: "spotify",
-    category: "chill",
-    url: "https://open.spotify.com/playlist/37i9dQZF1DXdLEN7aqioXM",
-    color: "#d97706",
-    badge: "Lo-Fi Beats",
-    gradient: "linear-gradient(135deg, #d97706, #451a03)",
-  },
-  {
-    id: "sp-peaceful-piano",
-    title: "Peaceful Piano",
-    desc: "Delicate and calming acoustic piano melodies for study and sleep.",
-    provider: "spotify",
-    category: "chill",
-    url: "https://open.spotify.com/playlist/37i9dQZF1DX4sWSpwq3LiO",
-    color: "#475569",
-    badge: "Piano Calm",
-    gradient: "linear-gradient(135deg, #475569, #0f172a)",
-  },
-  {
-    id: "yt-lofi-beats",
-    title: "Lofi Beats To Relax / Study",
-    desc: "Chillhop and soothing lo-fi beats stream for focus, study, and coding.",
-    provider: "youtube",
-    category: "chill",
-    url: "lofi hip hop radio beats to relax study to",
-    color: "#6366f1",
-    badge: "Lofi Radio",
-    gradient: "linear-gradient(135deg, #6366f1, #312e81)",
-  },
-  {
-    id: "yt-synthwave-chill",
-    title: "Synthwave Retro 80s Chill",
-    desc: "Outrun neon vibes, retro synths, and driving midnight electronic cruising.",
-    provider: "youtube",
-    category: "chill",
-    url: "Synthwave Chill 80s Retro Electronic Beats",
-    color: "#ec4899",
-    badge: "Synthwave",
-    gradient: "linear-gradient(135deg, #ec4899, #70003C)",
-  },
-  {
-    id: "yt-coffeehouse",
-    title: "Acoustic Coffeehouse Hits",
-    desc: "Gentle acoustic guitar melodies, vocals, and soft indie folk.",
-    provider: "youtube",
-    category: "chill",
-    url: "acoustic chill coffeehouse hits",
-    color: "#d97706",
-    badge: "Acoustic",
-    gradient: "linear-gradient(135deg, #d97706, #5A2A00)",
-  },
-
-  // --- LATIN & REGGAETON ---
-  {
-    id: "sp-viva-latino",
-    title: "Viva Latino",
-    desc: "Today's hottest Latin hits, reggaeton, and tropical rhythms.",
-    provider: "spotify",
-    category: "latin",
-    url: "https://open.spotify.com/playlist/37i9dQZF1DX10zKzsJ2jva",
-    color: "#eab308",
-    badge: "Viva Latino",
-    gradient: "linear-gradient(135deg, #eab308, #713f12)",
-  },
-  {
-    id: "sp-baila-reggaeton",
-    title: "Baila Reggaeton",
-    desc: "Danceable Latin party tracks, dembow beats, and summer anthems.",
-    provider: "spotify",
-    category: "latin",
-    url: "https://open.spotify.com/playlist/37i9dQZF1DX186v583rmzp",
-    color: "#f97316",
-    badge: "Reggaeton",
-    gradient: "linear-gradient(135deg, #f97316, #7c2d12)",
-  },
-  {
-    id: "yt-latin-hits",
-    title: "Top Latin & Reggaeton Hits",
-    desc: "Bad Bunny, Karol G, Feid, and the biggest Latin chart-toppers.",
-    provider: "youtube",
-    category: "latin",
-    url: "Top Latin Reggaeton Hits Official Audio Latest",
-    color: "#FF0000",
-    badge: "Latin Party",
-    gradient: "linear-gradient(135deg, #ea580c, #431407)",
-  },
-
-  // --- DECADES & NOSTALGIA ---
-  {
-    id: "sp-all-out-80s",
-    title: "All Out 80s",
-    desc: "Synthpop, new wave, pop anthems, and hair metal from the 1980s.",
-    provider: "spotify",
-    category: "decades",
-    url: "https://open.spotify.com/playlist/37i9dQZF1DX4UtSsGT1Sbe",
-    color: "#a855f7",
-    badge: "80s Retro",
-    gradient: "linear-gradient(135deg, #a855f7, #581c87)",
-  },
-  {
-    id: "sp-all-out-90s",
-    title: "All Out 90s",
-    desc: "Eurodance, grunge, Britpop, and nostalgic classics from the 1990s.",
-    provider: "spotify",
-    category: "decades",
-    url: "https://open.spotify.com/playlist/37i9dQZF1DXbTxeAdrVG2l",
-    color: "#3b82f6",
-    badge: "90s Nostalgia",
-    gradient: "linear-gradient(135deg, #3b82f6, #1e3a8a)",
-  },
-  {
-    id: "sp-all-out-2000s",
-    title: "All Out 2000s",
-    desc: "Y2K pop, emo rock, early hip-hop, and defining millennium tracks.",
-    provider: "spotify",
-    category: "decades",
-    url: "https://open.spotify.com/playlist/37i9dQZF1DX4o1oenSJRJd",
-    color: "#06b6d4",
-    badge: "2000s Y2K",
-    gradient: "linear-gradient(135deg, #06b6d4, #164e63)",
-  },
-  {
-    id: "sp-all-out-2010s",
-    title: "All Out 2010s",
-    desc: "The monumental tracks that defined the streaming decade.",
-    provider: "spotify",
-    category: "decades",
-    url: "https://open.spotify.com/playlist/37i9dQZF1DX5Ejj0EkURtP",
-    color: "#10b981",
-    badge: "2010s Hits",
-    gradient: "linear-gradient(135deg, #10b981, #064e3b)",
-  },
-  {
-    id: "yt-nostalgia-mix",
-    title: "90s & 2000s Nostalgia Mix",
-    desc: "Golden era throwback mix of iconic pop, alternative, and rock.",
-    provider: "youtube",
-    category: "decades",
-    url: "90s 2000s Pop and Rock Hits Nostalgia Mix",
-    color: "#FF0000",
-    badge: "Throwback",
-    gradient: "linear-gradient(135deg, #8b5cf6, #3730a3)",
-  },
-];
 
 export interface OnlinePlaylistResult {
   id: string;
@@ -697,7 +150,7 @@ interface DiscoverPlaylistInfo {
   tracks: DiscoverTrack[];
 }
 
-export default function ContentArea({
+function ContentArea({
   tracks,
   currentTrack,
   isPlaying,
@@ -709,6 +162,7 @@ export default function ContentArea({
   onAddLocalTracks,
   onAddTrackToPlaylist,
 }: ContentAreaProps) {
+  const { data: curated, loading: curatedLoading, error: curatedError } = useCuratedPlaylists();
   const [searchQuery, setSearchQuery] = useState("");
   const urlAnalysis = useMemo(() => analyzeSearchQuery(searchQuery), [searchQuery]);
   const [showImportModal, setShowImportModal] = useState(false);
@@ -724,6 +178,25 @@ export default function ContentArea({
   const [isDownloading, setIsDownloading] = useState(false);
   const [downloadStatus, setDownloadStatus] = useState("");
   const [downloadError, setDownloadError] = useState("");
+  const [dlPercent, setDlPercent] = useState<Record<string, number>>({});
+
+  // Live progress from the Rust download runner (job "main" = URL box, else track id)
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let dead = false;
+    safeListen<{ job: string; label: string; percent: number; phase: string }>("mg-download-progress", (e) => {
+      const { job, percent, phase, label } = e.payload;
+      setDlPercent(prev => ({ ...prev, [job]: percent }));
+      if (job === "main") {
+        setDownloadStatus(phase === "convert" ? `Converting to MP3... ${label}` : `Downloading ${Math.round(percent)}% ${label}`);
+      }
+    }).then(u => { if (dead) u(); else unlisten = u; });
+    return () => { dead = true; if (unlisten) unlisten(); };
+  }, []);
+
+  const cancelAllDownloads = async () => {
+    try { await invoke<string>("cancel_downloads"); } catch {}
+  };
   const [localTracks, setLocalTracks] = useState<Track[]>([]);
   const [downloadDir, setDownloadDir] = useState("");
   const [ytdlpStatus, setYtdlpStatus] = useState<string | null>(null);
@@ -780,7 +253,7 @@ export default function ContentArea({
   // Auto-fetch fresh live playlists when user opens discover view and list is empty
   useEffect(() => {
     if (activeView === "discover" && onlinePlaylists.length === 0 && !isSearchingOnlinePlaylists) {
-      handleSearchOnlinePlaylists("Today's Top Hits", "all");
+      handleSearchOnlinePlaylists(DEFAULT_DISCOVER_QUERY, "all");
     }
   }, [activeView]);
 
@@ -802,6 +275,7 @@ export default function ContentArea({
   // Hub provider search state
   const [hubSearchQuery, setHubSearchQuery] = useState("");
   const [hubSearchResults, setHubSearchResults] = useState<DiscoverTrack[]>([]);
+  const [hubSearchError, setHubSearchError] = useState("");
   const [isSearchingHub, setIsSearchingHub] = useState(false);
   const [isAutoPopulating, setIsAutoPopulating] = useState(false);
 
@@ -984,14 +458,20 @@ export default function ContentArea({
   const handleHubSearch = async (query: string, provider: string) => {
     if (!query.trim()) return;
     setIsSearchingHub(true);
+    setHubSearchError("");
     try {
       const results = await invoke<DiscoverTrack[]>("search_online_tracks", {
         query: query.trim(),
         provider,
       });
       setHubSearchResults(results || []);
+      if (!results || results.length === 0) {
+        setHubSearchError("No results found for that search.");
+      }
     } catch (e: any) {
       console.error("Hub search error:", e);
+      setHubSearchResults([]);
+      setHubSearchError(typeof e === "string" ? e : e?.toString?.() || "Search failed");
     } finally {
       setIsSearchingHub(false);
     }
@@ -1071,7 +551,7 @@ export default function ContentArea({
       const dir = downloadDir || await invoke<string>("get_download_dir");
       if (!downloadDir) setDownloadDir(dir);
 
-      await invoke<string>("download_audio", { url: track.video_url, outputDir: dir });
+      await invoke<string>("download_audio", { url: track.video_url, outputDir: dir, jobId: track.id, single: true });
       
       setDownloadingTracks(prev => ({
         ...prev,
@@ -1125,7 +605,7 @@ export default function ContentArea({
       trackIds: mappedTracks.map(t => t.id),
     };
 
-    onAddLocalTracks(mappedTracks);
+    onAddLocalTracks(mappedTracks, { keepUrlDuplicates: true });
     onSyncPlaylist(newPl);
     onNavigate(newPl.id);
   };
@@ -1152,7 +632,7 @@ export default function ContentArea({
 
   const [urlHistory, setUrlHistory] = useState<string[]>(() => {
     try {
-      return JSON.parse(localStorage.getItem("mg_url_history") ?? "[]");
+      return JSON.parse(localStorage.getItem(STORAGE_KEYS.urlHistory) ?? "[]");
     } catch {
       return [];
     }
@@ -1164,14 +644,14 @@ export default function ContentArea({
     setUrlHistory(prev => {
       const filtered = prev.filter(u => u !== trimmed);
       const updated = [trimmed, ...filtered].slice(0, 10);
-      localStorage.setItem("mg_url_history", JSON.stringify(updated));
+      localStorage.setItem(STORAGE_KEYS.urlHistory, JSON.stringify(updated));
       return updated;
     });
   };
 
   const clearHistory = () => {
     setUrlHistory([]);
-    localStorage.removeItem("mg_url_history");
+    localStorage.removeItem(STORAGE_KEYS.urlHistory);
   };
 
   // Initialize and load local folder & tracks
@@ -1247,7 +727,7 @@ export default function ContentArea({
 
       setDownloadStatus("Running download engine (yt-dlp / spotdl)... This may take a moment.");
       
-      const res = await invoke<string>("download_audio", { url: downloadUrl, outputDir: dir });
+      const res = await invoke<string>("download_audio", { url: downloadUrl, outputDir: dir, jobId: "main" });
       setDownloadStatus(res);
       setDownloadUrl("");
 
@@ -1419,7 +899,7 @@ export default function ContentArea({
       {/* Page header */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 28 }}>
         <div>
-          <h2 style={{ fontSize: 22, fontWeight: 900, color: "#fff", letterSpacing: "-0.03em" }}>
+          <h2 style={{ fontSize: 22, fontWeight: 900, color: "var(--text)", letterSpacing: "-0.03em" }}>
             {activePlaylist 
               ? activePlaylist.name 
               : activeView === "search" 
@@ -1438,7 +918,7 @@ export default function ContentArea({
               ? "Local Music Library"
               : "Home Library"}
           </h2>
-          <p style={{ fontSize: 12, color: "#9FA2B4", marginTop: 4, fontWeight: 500 }}>
+          <p style={{ fontSize: 12, color: "var(--text-2)", marginTop: 4, fontWeight: 500 }}>
             {activePlaylist
               ? `${activePlaylist.source.toUpperCase()} · ${displayedTracks.length} tracks`
               : activeView === "downloads"
@@ -1462,11 +942,11 @@ export default function ContentArea({
             style={{
               display: "flex", alignItems: "center", gap: 7,
               padding: "9px 18px", borderRadius: 12,
-              background: showAddSongsPanel ? "rgba(255,255,255,0.12)" : "#8A2BE2",
-              color: "#fff",
-              border: `1px solid ${showAddSongsPanel ? "rgba(255,255,255,0.2)" : "transparent"}`,
+              background: showAddSongsPanel ? "color-mix(in srgb, var(--text) 12%, transparent)" : "var(--accent)",
+              color: "var(--accent-fg)",
+              border: `1px solid ${showAddSongsPanel ? "color-mix(in srgb, var(--text) 20%, transparent)" : "transparent"}`,
               fontSize: 12, fontWeight: 700,
-              cursor: "pointer", boxShadow: "0 4px 20px rgba(138,43,226,0.35)",
+              cursor: "pointer", boxShadow: "0 4px 20px color-mix(in srgb, var(--accent) 35%, transparent)",
               transition: "all 0.15s ease",
             }}
           >
@@ -1483,9 +963,9 @@ export default function ContentArea({
             style={{
               display: "flex", alignItems: "center", gap: 7,
               padding: "9px 18px", borderRadius: 12,
-              background: "#8A2BE2", color: "#fff",
+              background: "var(--accent)", color: "var(--accent-fg)",
               border: "none", fontSize: 12, fontWeight: 700,
-              cursor: "pointer", boxShadow: "0 4px 20px rgba(138,43,226,0.35)",
+              cursor: "pointer", boxShadow: "0 4px 20px color-mix(in srgb, var(--accent) 35%, transparent)",
               transition: "transform 0.15s ease",
             }}
           >
@@ -1503,16 +983,16 @@ export default function ContentArea({
         <div style={{
           display: "flex", alignItems: "center", gap: 32,
           padding: "24px 28px", borderRadius: 20, marginBottom: 28,
-          background: "rgba(20,20,32,0.5)",
-          backdropFilter: "blur(20px)",
-          border: "1px solid rgba(255,255,255,0.07)",
+          background: "color-mix(in srgb, var(--surface) 90%, transparent)",
+          
+          border: "1px solid color-mix(in srgb, var(--text) 7%, transparent)",
           boxShadow: "0 8px 32px rgba(0,0,0,0.4)",
           position: "relative", overflow: "hidden",
         }}>
           {/* Ambient glow */}
           <div style={{
             position: "absolute", inset: 0,
-            background: "linear-gradient(90deg, rgba(138,43,226,0.06), rgba(236,72,153,0.04), transparent)",
+            background: "var(--surface)",
             pointerEvents: "none",
           }} />
 
@@ -1521,7 +1001,7 @@ export default function ContentArea({
             <div
               style={{
                 width: 130, height: 130, borderRadius: "50%",
-                background: "radial-gradient(circle at 50% 50%, #1a1a2e 60%, #0d0d1a 100%)",
+                background: "var(--surface-2)",
                 border: "3px solid #2a2a3a",
                 boxShadow: "0 0 30px rgba(0,0,0,0.8), inset 0 0 20px rgba(0,0,0,0.5)",
                 display: "flex", alignItems: "center", justifyContent: "center",
@@ -1535,7 +1015,7 @@ export default function ContentArea({
                   position: "absolute",
                   width: `${100 - r}%`, height: `${100 - r}%`,
                   borderRadius: "50%",
-                  border: "1px solid rgba(255,255,255,0.04)",
+                  border: "1px solid color-mix(in srgb, var(--text) 4%, transparent)",
                 }} />
               ))}
               {/* Center label */}
@@ -1551,8 +1031,8 @@ export default function ContentArea({
               <div style={{
                 position: "absolute", width: 8, height: 8,
                 borderRadius: "50%",
-                background: "#0d0d1a",
-                border: "1px solid rgba(255,255,255,0.15)",
+                background: "var(--surface)",
+                border: "1px solid color-mix(in srgb, var(--text) 15%, transparent)",
               }} />
             </div>
             {/* Tone arm */}
@@ -1574,16 +1054,16 @@ export default function ContentArea({
             <div style={{
               display: "inline-block",
               fontSize: 9, fontWeight: 800, letterSpacing: "0.12em",
-              textTransform: "uppercase", color: "#8A2BE2",
-              background: "rgba(138,43,226,0.12)",
+              textTransform: "uppercase", color: "var(--accent)",
+              background: "color-mix(in srgb, var(--accent) 12%, transparent)",
               padding: "3px 10px", borderRadius: 99, marginBottom: 10,
             }}>
               Now Playing
             </div>
-            <h3 style={{ fontSize: 26, fontWeight: 900, color: "#fff", letterSpacing: "-0.03em", lineHeight: 1.1, marginBottom: 6 }}>
+            <h3 style={{ fontSize: 26, fontWeight: 900, color: "var(--text)", letterSpacing: "-0.03em", lineHeight: 1.1, marginBottom: 6 }}>
               {currentTrack.title}
             </h3>
-            <p style={{ fontSize: 13, color: "#9FA2B4", fontWeight: 600, marginBottom: 18 }}>
+            <p style={{ fontSize: 13, color: "var(--text-2)", fontWeight: 600, marginBottom: 18 }}>
               {currentTrack.artist}
               <span style={{ opacity: 0.5, fontWeight: 400 }}> — {currentTrack.album}</span>
             </p>
@@ -1591,10 +1071,10 @@ export default function ContentArea({
               onClick={() => onSelectTrack(currentTrack)}
               style={{
                 padding: "9px 22px", borderRadius: 10,
-                background: "#fff", color: "#0a0a0f",
+                background: "var(--accent)", color: "var(--accent-fg)",
                 border: "none", fontSize: 12, fontWeight: 800,
                 cursor: "pointer",
-                boxShadow: "0 4px 14px rgba(255,255,255,0.1)",
+                boxShadow: "0 4px 14px color-mix(in srgb, var(--text) 10%, transparent)",
                 transition: "transform 0.15s ease",
               }}
             >
@@ -1635,13 +1115,13 @@ export default function ContentArea({
                 style={{
                   width: "100%", padding: searchQuery ? "12px 40px 12px 44px" : "12px 16px 12px 44px",
                   borderRadius: 14,
-                  background: "rgba(255,255,255,0.04)",
-                  border: "1px solid rgba(255,255,255,0.08)",
-                  color: "#fff", fontSize: 13, fontWeight: 500,
+                  background: "color-mix(in srgb, var(--text) 4%, transparent)",
+                  border: "1px solid color-mix(in srgb, var(--text) 8%, transparent)",
+                  color: "var(--text)", fontSize: 13, fontWeight: 500,
                   outline: "none", boxSizing: "border-box",
                 }}
               />
-              <svg style={{ position: "absolute", left: 16, top: "50%", transform: "translateY(-50%)", color: "#5A5D70" }} width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+              <svg style={{ position: "absolute", left: 16, top: "50%", transform: "translateY(-50%)", color: "var(--text-3)" }} width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                 <circle cx="11" cy="11" r="8" />
                 <line x1="21" y1="21" x2="16.65" y2="16.65" />
               </svg>
@@ -1651,8 +1131,8 @@ export default function ContentArea({
                   onClick={() => { setSearchQuery(""); setOnlineTracks([]); setLoadedPlaylist(null); }}
                   style={{
                     position: "absolute", right: 14, top: "50%", transform: "translateY(-50%)",
-                    background: "rgba(255,255,255,0.1)", border: "none", borderRadius: "50%",
-                    color: "#9FA2B4", width: 22, height: 22, cursor: "pointer",
+                    background: "color-mix(in srgb, var(--text) 10%, transparent)", border: "none", borderRadius: "50%",
+                    color: "var(--text-2)", width: 22, height: 22, cursor: "pointer",
                     display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11,
                   }}
                   title="Clear search"
@@ -1669,11 +1149,11 @@ export default function ContentArea({
               disabled={isSearchingOnline || !searchQuery.trim()}
               style={{
                 padding: "0 22px", borderRadius: 14,
-                background: urlAnalysis.isUrl ? urlAnalysis.color : "#8A2BE2", color: "#fff",
+                background: urlAnalysis.isUrl ? urlAnalysis.color : "var(--accent)", color: "var(--accent-fg)",
                 border: "none", fontSize: 13, fontWeight: 700,
                 cursor: isSearchingOnline ? "not-allowed" : "pointer",
                 display: "flex", alignItems: "center", gap: 8,
-                boxShadow: `0 4px 16px ${urlAnalysis.isUrl ? `${urlAnalysis.color}40` : "rgba(138,43,226,0.35)"}`,
+                boxShadow: `0 4px 16px ${urlAnalysis.isUrl ? `${urlAnalysis.color}40` : "color-mix(in srgb, var(--accent) 35%, transparent)"}`,
               }}
             >
               {isSearchingOnline ? (
@@ -1701,15 +1181,15 @@ export default function ContentArea({
               <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0, flex: 1 }}>
                 <span style={{
                   fontSize: 10, fontWeight: 900, textTransform: "uppercase",
-                  background: urlAnalysis.color, color: "#fff",
+                  background: urlAnalysis.color, color: "var(--text)",
                   padding: "3px 8px", borderRadius: 6, letterSpacing: "0.06em", flexShrink: 0,
                 }}>
                   {urlAnalysis.label}
                 </span>
-                <span style={{ fontSize: 12, color: "#fff", fontWeight: 700, flexShrink: 0 }}>
+                <span style={{ fontSize: 12, color: "var(--text)", fontWeight: 700, flexShrink: 0 }}>
                   Smart Link Detected:
                 </span>
-                <span style={{ fontSize: 12, color: "#9FA2B4", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                <span style={{ fontSize: 12, color: "var(--text-2)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                   {searchQuery.trim()}
                 </span>
               </div>
@@ -1722,7 +1202,7 @@ export default function ContentArea({
                 disabled={isSearchingOnline}
                 style={{
                   padding: "6px 14px", borderRadius: 8,
-                  background: urlAnalysis.color, color: "#fff", border: "none",
+                  background: urlAnalysis.color, color: "var(--text)", border: "none",
                   fontSize: 11, fontWeight: 800, cursor: isSearchingOnline ? "not-allowed" : "pointer",
                   display: "flex", alignItems: "center", gap: 6, flexShrink: 0,
                   boxShadow: `0 2px 10px ${urlAnalysis.color}40`,
@@ -1742,15 +1222,15 @@ export default function ContentArea({
 
           {/* Provider Filter Tabs */}
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-            <span style={{ fontSize: 10, fontWeight: 800, color: "#5A5D70", textTransform: "uppercase", letterSpacing: "0.08em", marginRight: 4 }}>
+            <span style={{ fontSize: 10, fontWeight: 800, color: "var(--text-3)", textTransform: "uppercase", letterSpacing: "0.08em", marginRight: 4 }}>
               Provider Filter:
             </span>
             {[
-              { id: "all", label: "All Sources", color: "#8A2BE2" },
+              { id: "all", label: "All Sources", color: "var(--accent)" },
               { id: "spotify", label: "Spotify", color: "#1DB954" },
               { id: "youtube", label: "YouTube Music", color: "#FF0000" },
               { id: "soundcloud", label: "SoundCloud", color: "#FF5500" },
-              { id: "local", label: "Local Files", color: "#8A2BE2" },
+              { id: "local", label: "Local Files", color: "var(--accent)" },
             ].map(p => {
               const isSelected = providerFilter === p.id;
               return (
@@ -1763,9 +1243,9 @@ export default function ContentArea({
                     fontSize: 11,
                     fontWeight: isSelected ? 800 : 600,
                     cursor: "pointer",
-                    background: isSelected ? `${p.color}25` : "rgba(255,255,255,0.03)",
-                    color: isSelected ? (p.id === "all" ? "#fff" : p.color) : "#9FA2B4",
-                    border: `1px solid ${isSelected ? p.color : "rgba(255,255,255,0.06)"}`,
+                    background: isSelected ? `${p.color}25` : "color-mix(in srgb, var(--text) 3%, transparent)",
+                    color: isSelected ? (p.id === "all" ? "var(--text)" : p.color) : "var(--text-2)",
+                    border: `1px solid ${isSelected ? p.color : "color-mix(in srgb, var(--text) 6%, transparent)"}`,
                     transition: "all 0.15s ease",
                     display: "flex",
                     alignItems: "center",
@@ -1784,10 +1264,10 @@ export default function ContentArea({
               );
             })}
             {activeView === "home" && searchQuery.trim() && (
-              <span style={{ marginLeft: "auto", fontSize: 11, color: "#8A2BE2", fontWeight: 700, display: "flex", alignItems: "center", gap: 6 }}>
+              <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--accent)", fontWeight: 700, display: "flex", alignItems: "center", gap: 6 }}>
                 <span>Filtering {displayedTracks.length} song{displayedTracks.length === 1 ? "" : "s"} in library</span>
                 <span style={{ opacity: 0.5 }}>·</span>
-                <span style={{ color: "#9FA2B4", fontWeight: 500 }}>Press Enter to search online</span>
+                <span style={{ color: "var(--text-2)", fontWeight: 500 }}>Press Enter to search online</span>
               </span>
             )}
           </div>
@@ -1796,16 +1276,16 @@ export default function ContentArea({
           {isSearchingOnline && (
             <div style={{
               padding: "24px", textAlign: "center",
-              background: "rgba(138,43,226,0.06)", borderRadius: 16,
-              border: "1px dashed rgba(138,43,226,0.25)",
+              background: "color-mix(in srgb, var(--accent) 6%, transparent)", borderRadius: 16,
+              border: "1px dashed color-mix(in srgb, var(--accent) 25%, transparent)",
             }}>
               <div style={{
                 display: "inline-block", width: 22, height: 22,
-                border: "2px solid #8A2BE2", borderTopColor: "transparent",
+                border: "2px solid var(--accent)", borderTopColor: "transparent",
                 borderRadius: "50%", animation: "spin-slow 1s linear infinite",
                 marginBottom: 10,
               }} />
-              <p style={{ color: "#9FA2B4", fontSize: 13, fontWeight: 600, margin: 0 }}>
+              <p style={{ color: "var(--text-2)", fontSize: 13, fontWeight: 600, margin: 0 }}>
                 {urlAnalysis.isUrl
                   ? `Loading ${urlAnalysis.label}... Resolving track metadata & high-bitrate streams`
                   : "Searching online catalog across Spotify, YouTube Music, and SoundCloud..."}
@@ -1824,9 +1304,9 @@ export default function ContentArea({
             <div style={{
               display: "flex", alignItems: "center", gap: 20,
               padding: "20px 24px", borderRadius: 16,
-              background: "rgba(20,20,32,0.65)",
-              backdropFilter: "blur(20px)",
-              border: "1px solid rgba(255,255,255,0.08)",
+              background: "color-mix(in srgb, var(--surface) 90%, transparent)",
+              
+              border: "1px solid color-mix(in srgb, var(--text) 8%, transparent)",
               boxShadow: "0 8px 32px rgba(0,0,0,0.3)",
               marginBottom: 16,
             }}>
@@ -1834,9 +1314,9 @@ export default function ContentArea({
                 width: 90, height: 90, borderRadius: 12, flexShrink: 0,
                 backgroundImage: loadedPlaylist.thumbnail ? `url(${loadedPlaylist.thumbnail})` : "none",
                 backgroundSize: "cover", backgroundPosition: "center",
-                background: !loadedPlaylist.thumbnail ? "linear-gradient(135deg, #8A2BE2, #EC4899)" : undefined,
+                background: !loadedPlaylist.thumbnail ? "var(--surface-2)" : undefined,
                 display: "flex", alignItems: "center", justifyContent: "center",
-                fontSize: loadedPlaylist.thumbnail ? 0 : 32, fontWeight: 900, color: "#fff",
+                fontSize: loadedPlaylist.thumbnail ? 0 : 32, fontWeight: 900, color: "var(--text)",
                 boxShadow: "0 4px 16px rgba(0,0,0,0.3)",
               }}>
                 {!loadedPlaylist.thumbnail && loadedPlaylist.title.charAt(0).toUpperCase()}
@@ -1852,19 +1332,19 @@ export default function ContentArea({
                   }}>
                     {(loadedPlaylist.source === "spotify" || loadedPlaylist.uploader === "Spotify") ? "Spotify" : (loadedPlaylist.source === "soundcloud" ? "SoundCloud" : "YouTube")}
                   </span>
-                  <span style={{ fontSize: 9, fontWeight: 800, color: "#9FA2B4", letterSpacing: "0.08em", textTransform: "uppercase" }}>
+                  <span style={{ fontSize: 9, fontWeight: 800, color: "var(--text-2)", letterSpacing: "0.08em", textTransform: "uppercase" }}>
                     {urlAnalysis.isUrl ? urlAnalysis.label : "Online Collection"}
                   </span>
                 </div>
-                <h3 style={{ fontSize: 18, fontWeight: 900, color: "#fff", margin: "2px 0 4px 0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                <h3 style={{ fontSize: 18, fontWeight: 900, color: "var(--text)", margin: "2px 0 4px 0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                   {loadedPlaylist.title}
                 </h3>
-                <p style={{ fontSize: 11, color: "#9FA2B4", fontWeight: 500, margin: "0 0 10px 0" }}>
-                  Curator / Artist: <span style={{ color: "#fff", fontWeight: 700 }}>{loadedPlaylist.uploader}</span> · {loadedPlaylist.tracks.length} tracks
+                <p style={{ fontSize: 11, color: "var(--text-2)", fontWeight: 500, margin: "0 0 10px 0" }}>
+                  Curator / Artist: <span style={{ color: "var(--text)", fontWeight: 700 }}>{loadedPlaylist.uploader}</span> · {loadedPlaylist.tracks.length} tracks
                 </p>
                 {loadedPlaylist.description && (
                   <p style={{
-                    fontSize: 10.5, color: "#5A5D70", lineHeight: 1.4, margin: "0 0 12px 0",
+                    fontSize: 10.5, color: "var(--text-3)", lineHeight: 1.4, margin: "0 0 12px 0",
                     display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden",
                   }}>
                     {loadedPlaylist.description}
@@ -1876,9 +1356,9 @@ export default function ContentArea({
                     onClick={handlePlayAllTracks}
                     style={{
                       padding: "7px 16px", borderRadius: 10,
-                      background: "linear-gradient(135deg, #1DB954, #10b981)", color: "#fff",
+                      background: "var(--surface-2)", color: "var(--text)",
                       border: "none", fontSize: 11, fontWeight: 800,
-                      cursor: "pointer", boxShadow: "0 4px 16px rgba(29,185,84,0.35)",
+                      cursor: "pointer", boxShadow: "0 4px 16px color-mix(in srgb, var(--accent) 30%, transparent)",
                       display: "flex", alignItems: "center", gap: 6,
                     }}
                   >
@@ -1892,9 +1372,9 @@ export default function ContentArea({
                     onClick={handleImportPlaylist}
                     style={{
                       padding: "7px 16px", borderRadius: 10,
-                      background: "#8A2BE2", color: "#fff",
+                      background: "var(--accent)", color: "var(--accent-fg)",
                       border: "none", fontSize: 11, fontWeight: 800,
-                      cursor: "pointer", boxShadow: "0 4px 16px rgba(138,43,226,0.3)",
+                      cursor: "pointer", boxShadow: "0 4px 16px color-mix(in srgb, var(--accent) 30%, transparent)",
                       display: "flex", alignItems: "center", gap: 6,
                     }}
                   >
@@ -1909,8 +1389,8 @@ export default function ContentArea({
                     onClick={() => { setLoadedPlaylist(null); setOnlineTracks([]); }}
                     style={{
                       padding: "7px 14px", borderRadius: 10,
-                      background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.08)",
-                      color: "#9FA2B4", fontSize: 11, fontWeight: 700, cursor: "pointer",
+                      background: "color-mix(in srgb, var(--text) 5%, transparent)", border: "1px solid color-mix(in srgb, var(--text) 8%, transparent)",
+                      color: "var(--text-2)", fontSize: 11, fontWeight: 700, cursor: "pointer",
                     }}
                   >
                     ✕ Dismiss
@@ -1922,9 +1402,9 @@ export default function ContentArea({
 
           {onlineTracks.length > 0 && (
             <div>
-              <div style={{ fontSize: 10, fontWeight: 800, color: "#00F0FF", letterSpacing: "0.12em", textTransform: "uppercase", marginBottom: 12, display: "flex", alignItems: "center", gap: 6 }}>
+              <div style={{ fontSize: 10, fontWeight: 800, color: "var(--accent)", letterSpacing: "0.12em", textTransform: "uppercase", marginBottom: 12, display: "flex", alignItems: "center", gap: 6 }}>
                 <span>Online Streamable Results</span>
-                <span style={{ padding: "2px 6px", borderRadius: 4, background: "rgba(0,240,255,0.15)", fontSize: 9 }}>
+                <span style={{ padding: "2px 6px", borderRadius: 4, background: "color-mix(in srgb, var(--accent) 15%, transparent)", fontSize: 9 }}>
                   {onlineTracks.length} found
                 </span>
               </div>
@@ -1937,27 +1417,27 @@ export default function ContentArea({
                       style={{
                         display: "flex", alignItems: "center", justifyContent: "space-between",
                         padding: "10px 14px", borderRadius: 14,
-                        background: isCurrent ? "rgba(138,43,226,0.15)" : "rgba(255,255,255,0.03)",
-                        border: `1px solid ${isCurrent ? "rgba(138,43,226,0.4)" : "rgba(255,255,255,0.06)"}`,
+                        background: isCurrent ? "color-mix(in srgb, var(--accent) 15%, transparent)" : "color-mix(in srgb, var(--text) 3%, transparent)",
+                        border: `1px solid ${isCurrent ? "color-mix(in srgb, var(--accent) 40%, transparent)" : "color-mix(in srgb, var(--text) 6%, transparent)"}`,
                         transition: "all 0.15s ease",
                       }}
                     >
                       <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0, flex: 1 }}>
-                        <span style={{ width: 20, textAlign: "center", fontSize: 11, fontWeight: 700, color: "#5A5D70" }}>
+                        <span style={{ width: 20, textAlign: "center", fontSize: 11, fontWeight: 700, color: "var(--text-3)" }}>
                           {idx + 1}
                         </span>
                         {t.thumbnail ? (
-                          <img src={t.thumbnail} alt="" style={{ width: 42, height: 42, borderRadius: 8, objectFit: "cover", flexShrink: 0 }} />
+                          <img src={t.thumbnail} alt="" loading="lazy" decoding="async" style={{ width: 42, height: 42, borderRadius: 8, objectFit: "cover", flexShrink: 0 }} />
                         ) : (
-                          <div style={{ width: 42, height: 42, borderRadius: 8, background: "rgba(255,255,255,0.06)", display: "flex", alignItems: "center", justifyContent: "center", color: "#8A2BE2", fontWeight: 800, flexShrink: 0 }}>
+                          <div style={{ width: 42, height: 42, borderRadius: 8, background: "color-mix(in srgb, var(--text) 6%, transparent)", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--accent)", fontWeight: 800, flexShrink: 0 }}>
                             {t.title.charAt(0)}
                           </div>
                         )}
                         <div style={{ minWidth: 0 }}>
-                          <div style={{ fontSize: 13, fontWeight: 700, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                             {t.title}
                           </div>
-                          <div style={{ fontSize: 11, color: "#9FA2B4", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          <div style={{ fontSize: 11, color: "var(--text-2)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                             {t.artist}
                           </div>
                         </div>
@@ -1969,18 +1449,18 @@ export default function ContentArea({
                           textTransform: "uppercase",
                           background: t.source === "spotify" ? "rgba(29,185,84,0.15)" : t.source === "soundcloud" ? "rgba(255,85,0,0.15)" : "rgba(255,0,0,0.15)",
                           color: t.source === "spotify" ? "#1DB954" : t.source === "soundcloud" ? "#FF5500" : "#FF4444",
-                          border: `1px solid ${t.source === "spotify" ? "rgba(29,185,84,0.3)" : t.source === "soundcloud" ? "rgba(255,85,0,0.3)" : "rgba(255,0,0,0.3)"}`,
+                          border: `1px solid ${t.source === "spotify" ? "color-mix(in srgb, var(--accent) 30%, transparent)" : t.source === "soundcloud" ? "rgba(255,85,0,0.3)" : "rgba(255,0,0,0.3)"}`,
                         }}>
                           {t.source === "youtube" ? "YouTube" : t.source || "Web"}
                         </span>
-                        <span style={{ fontSize: 11, color: "#5A5D70", fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>
+                        <span style={{ fontSize: 11, color: "var(--text-3)", fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>
                           {formatDuration(t.duration)}
                         </span>
                         <button
                           onClick={() => handlePlaylistTrackPreview(t)}
                           style={{
                             padding: "6px 14px", borderRadius: 8,
-                            background: "#8A2BE2", color: "#fff", border: "none",
+                            background: "var(--accent)", color: "var(--accent-fg)", border: "none",
                             fontSize: 11, fontWeight: 700, cursor: "pointer",
                             display: "flex", alignItems: "center", gap: 5,
                           }}
@@ -2005,8 +1485,8 @@ export default function ContentArea({
                             }}
                             style={{
                               padding: "6px 12px", borderRadius: 8,
-                              background: "rgba(255,255,255,0.06)", color: "#fff",
-                              border: "1px solid rgba(255,255,255,0.1)",
+                              background: "color-mix(in srgb, var(--text) 6%, transparent)", color: "var(--text)",
+                              border: "1px solid color-mix(in srgb, var(--text) 10%, transparent)",
                               fontSize: 11, fontWeight: 600, cursor: "pointer",
                             }}
                             title={`Add to ${playlists[0].name}`}
@@ -2025,10 +1505,10 @@ export default function ContentArea({
           {activeView === "search" && !isSearchingOnline && onlineTracks.length === 0 && searchQuery.trim().length === 0 && (
             <div style={{
               padding: "24px", borderRadius: 16,
-              background: "rgba(255,255,255,0.02)", border: "1px dashed rgba(255,255,255,0.06)",
+              background: "color-mix(in srgb, var(--text) 2%, transparent)", border: "1px dashed color-mix(in srgb, var(--text) 6%, transparent)",
               display: "flex", flexDirection: "column", gap: 12, alignItems: "center",
             }}>
-              <span style={{ fontSize: 11, color: "#5A5D70", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em" }}>
+              <span style={{ fontSize: 11, color: "var(--text-3)", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em" }}>
                 Suggested Searches
               </span>
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "center" }}>
@@ -2041,8 +1521,8 @@ export default function ContentArea({
                     }}
                     style={{
                       padding: "6px 14px", borderRadius: 99,
-                      background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.08)",
-                      color: "#9FA2B4", fontSize: 12, fontWeight: 600, cursor: "pointer",
+                      background: "color-mix(in srgb, var(--text) 5%, transparent)", border: "1px solid color-mix(in srgb, var(--text) 8%, transparent)",
+                      color: "var(--text-2)", fontSize: 12, fontWeight: 600, cursor: "pointer",
                       display: "inline-flex", alignItems: "center", gap: 6,
                     }}
                   >
@@ -2064,34 +1544,21 @@ export default function ContentArea({
         <div style={{
           display: "flex", flexDirection: "column", gap: 16, marginBottom: 28,
           padding: "24px 28px", borderRadius: 20,
-          background: "rgba(20,20,32,0.5)",
-          backdropFilter: "blur(20px)",
+          background: "color-mix(in srgb, var(--surface) 90%, transparent)",
+          
           border: `1px solid ${
             activeView === "provider-spotify"
-              ? "rgba(29,185,84,0.3)"
+              ? "color-mix(in srgb, var(--accent) 30%, transparent)"
               : activeView === "provider-ytmusic"
               ? "rgba(255,0,0,0.3)"
               : activeView === "provider-soundcloud"
               ? "rgba(255,85,0,0.3)"
-              : "rgba(138,43,226,0.3)"
+              : "color-mix(in srgb, var(--accent) 30%, transparent)"
           }`,
           boxShadow: "0 8px 32px rgba(0,0,0,0.4)",
           position: "relative", overflow: "hidden",
         }}>
-          {/* Ambient Glow */}
-          <div style={{
-            position: "absolute", inset: 0,
-            background: `linear-gradient(90deg, ${
-              activeView === "provider-spotify"
-                ? "rgba(29,185,84,0.08)"
-                : activeView === "provider-ytmusic"
-                ? "rgba(255,0,0,0.08)"
-                : activeView === "provider-soundcloud"
-                ? "rgba(255,85,0,0.08)"
-                : "rgba(138,43,226,0.08)"
-            }, transparent)`,
-            pointerEvents: "none",
-          }} />
+          
 
           {/* Header Row */}
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 14 }}>
@@ -2105,7 +1572,7 @@ export default function ContentArea({
                     ? "rgba(255,0,0,0.18)"
                     : activeView === "provider-soundcloud"
                     ? "rgba(255,85,0,0.18)"
-                    : "rgba(138,43,226,0.18)",
+                    : "color-mix(in srgb, var(--accent) 18%, transparent)",
                 color:
                   activeView === "provider-spotify"
                     ? "#1DB954"
@@ -2113,16 +1580,16 @@ export default function ContentArea({
                     ? "#FF0000"
                     : activeView === "provider-soundcloud"
                     ? "#FF5500"
-                    : "#8A2BE2",
+                    : "var(--accent)",
                 display: "flex", alignItems: "center", justifyContent: "center",
                 boxShadow: `0 0 20px ${
                   activeView === "provider-spotify"
-                    ? "rgba(29,185,84,0.3)"
+                    ? "color-mix(in srgb, var(--accent) 30%, transparent)"
                     : activeView === "provider-ytmusic"
                     ? "rgba(255,0,0,0.3)"
                     : activeView === "provider-soundcloud"
                     ? "rgba(255,85,0,0.3)"
-                    : "rgba(138,43,226,0.3)"
+                    : "color-mix(in srgb, var(--accent) 30%, transparent)"
                 }`,
               }}>
                 {activeView === "provider-spotify" && (
@@ -2148,7 +1615,7 @@ export default function ContentArea({
                 )}
               </div>
               <div>
-                <h3 style={{ fontSize: 20, fontWeight: 900, color: "#fff", margin: "0 0 4px 0" }}>
+                <h3 style={{ fontSize: 20, fontWeight: 900, color: "var(--text)", margin: "0 0 4px 0" }}>
                   {activeView === "provider-spotify"
                     ? "Spotify Music Hub"
                     : activeView === "provider-ytmusic"
@@ -2157,7 +1624,7 @@ export default function ContentArea({
                     ? "SoundCloud Hub"
                     : "Local Storage"}
                 </h3>
-                <span style={{ fontSize: 12, color: "#9FA2B4" }}>
+                <span style={{ fontSize: 12, color: "var(--text-2)" }}>
                   {activeView === "provider-spotify"
                     ? "Direct Spotify links, metadata extraction, and library synchronizer"
                     : activeView === "provider-ytmusic"
@@ -2176,9 +1643,9 @@ export default function ContentArea({
                   onClick={handleScan}
                   style={{
                     padding: "9px 18px", borderRadius: 12,
-                    background: "#8A2BE2", color: "#fff", border: "none",
+                    background: "var(--accent)", color: "var(--accent-fg)", border: "none",
                     fontSize: 12, fontWeight: 800, cursor: "pointer",
-                    boxShadow: "0 4px 16px rgba(138,43,226,0.4)",
+                    boxShadow: "0 4px 16px color-mix(in srgb, var(--accent) 40%, transparent)",
                   }}
                 >
                   Scan Downloads Folder
@@ -2194,7 +1661,7 @@ export default function ContentArea({
                         : activeView === "provider-ytmusic"
                         ? "#FF0000"
                         : "#FF5500",
-                    color: "#fff", border: "none",
+                    color: "var(--text)", border: "none",
                     fontSize: 12, fontWeight: 800, cursor: "pointer",
                     boxShadow: "0 4px 16px rgba(0,0,0,0.3)",
                   }}
@@ -2233,12 +1700,12 @@ export default function ContentArea({
                 style={{
                   width: "100%", padding: "12px 16px 12px 42px",
                   borderRadius: 14,
-                  background: "rgba(255,255,255,0.04)",
-                  border: "1px solid rgba(255,255,255,0.08)",
-                  color: "#fff", fontSize: 13, outline: "none", boxSizing: "border-box",
+                  background: "color-mix(in srgb, var(--text) 4%, transparent)",
+                  border: "1px solid color-mix(in srgb, var(--text) 8%, transparent)",
+                  color: "var(--text)", fontSize: 13, outline: "none", boxSizing: "border-box",
                 }}
               />
-              <svg style={{ position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)", color: "#5A5D70" }} width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+              <svg style={{ position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)", color: "var(--text-3)" }} width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                 <circle cx="11" cy="11" r="8" />
                 <line x1="21" y1="21" x2="16.65" y2="16.65" />
               </svg>
@@ -2257,7 +1724,7 @@ export default function ContentArea({
                     : activeView === "provider-ytmusic"
                     ? "#FF0000"
                     : "#FF5500",
-                color: "#fff", border: "none", fontSize: 13, fontWeight: 700,
+                color: "var(--text)", border: "none", fontSize: 13, fontWeight: 700,
                 cursor: isSearchingHub ? "not-allowed" : "pointer",
                 display: "flex", alignItems: "center", gap: 8,
               }}
@@ -2270,18 +1737,29 @@ export default function ContentArea({
           {isSearchingHub && (
             <div style={{
               padding: "20px", textAlign: "center",
-              background: "rgba(255,255,255,0.02)", borderRadius: 14,
-              border: "1px dashed rgba(255,255,255,0.08)",
+              background: "color-mix(in srgb, var(--text) 2%, transparent)", borderRadius: 14,
+              border: "1px dashed color-mix(in srgb, var(--text) 8%, transparent)",
             }}>
-              <p style={{ color: "#9FA2B4", fontSize: 13, fontWeight: 600, margin: 0 }}>
+              <p style={{ color: "var(--text-2)", fontSize: 13, fontWeight: 600, margin: 0 }}>
                 Querying live provider catalog...
               </p>
             </div>
           )}
 
+          {hubSearchError && !isSearchingHub && (
+            <div style={{
+              padding: "12px 16px", borderRadius: 12,
+              background: "rgba(239,68,68,0.08)",
+              border: "1px solid rgba(239,68,68,0.18)",
+              color: "#f87171", fontSize: 12, fontWeight: 600,
+            }}>
+              {hubSearchError}
+            </div>
+          )}
+
           {hubSearchResults.length > 0 && (
             <div>
-              <div style={{ fontSize: 10, fontWeight: 800, color: "#9FA2B4", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 12 }}>
+              <div style={{ fontSize: 10, fontWeight: 800, color: "var(--text-2)", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 12 }}>
                 Live Search Results ({hubSearchResults.length})
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -2294,40 +1772,40 @@ export default function ContentArea({
                       style={{
                         display: "flex", alignItems: "center", justifyContent: "space-between",
                         padding: "10px 14px", borderRadius: 12,
-                        background: isCurrent ? "rgba(138,43,226,0.15)" : "rgba(255,255,255,0.03)",
-                        border: `1px solid ${isCurrent ? "rgba(138,43,226,0.4)" : "rgba(255,255,255,0.06)"}`,
+                        background: isCurrent ? "color-mix(in srgb, var(--accent) 15%, transparent)" : "color-mix(in srgb, var(--text) 3%, transparent)",
+                        border: `1px solid ${isCurrent ? "color-mix(in srgb, var(--accent) 40%, transparent)" : "color-mix(in srgb, var(--text) 6%, transparent)"}`,
                       }}
                     >
                       <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0, flex: 1 }}>
-                        <span style={{ width: 20, textAlign: "center", fontSize: 11, fontWeight: 700, color: "#5A5D70" }}>
+                        <span style={{ width: 20, textAlign: "center", fontSize: 11, fontWeight: 700, color: "var(--text-3)" }}>
                           {idx + 1}
                         </span>
                         {t.thumbnail ? (
-                          <img src={t.thumbnail} alt="" style={{ width: 38, height: 38, borderRadius: 8, objectFit: "cover" }} />
+                          <img src={t.thumbnail} alt="" loading="lazy" decoding="async" style={{ width: 38, height: 38, borderRadius: 8, objectFit: "cover" }} />
                         ) : (
-                          <div style={{ width: 38, height: 38, borderRadius: 8, background: "rgba(255,255,255,0.06)", display: "flex", alignItems: "center", justifyContent: "center", color: "#8A2BE2", fontWeight: 800 }}>
+                          <div style={{ width: 38, height: 38, borderRadius: 8, background: "color-mix(in srgb, var(--text) 6%, transparent)", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--accent)", fontWeight: 800 }}>
                             {t.title.charAt(0)}
                           </div>
                         )}
                         <div style={{ minWidth: 0 }}>
-                          <div style={{ fontSize: 13, fontWeight: 700, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                             {t.title}
                           </div>
-                          <div style={{ fontSize: 11, color: "#9FA2B4", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          <div style={{ fontSize: 11, color: "var(--text-2)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                             {t.artist}
                           </div>
                         </div>
                       </div>
 
                       <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
-                        <span style={{ fontSize: 11, color: "#5A5D70", fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>
+                        <span style={{ fontSize: 11, color: "var(--text-3)", fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>
                           {formatDuration(t.duration)}
                         </span>
                         <button
                           onClick={() => handlePlaylistTrackPreview(t)}
                           style={{
                             padding: "6px 14px", borderRadius: 8,
-                            background: "#8A2BE2", color: "#fff", border: "none",
+                            background: "var(--accent)", color: "var(--accent-fg)", border: "none",
                             fontSize: 11, fontWeight: 700, cursor: "pointer",
                           }}
                         >
@@ -2351,8 +1829,8 @@ export default function ContentArea({
                             }}
                             style={{
                               padding: "6px 12px", borderRadius: 8,
-                              background: "rgba(255,255,255,0.06)", color: "#fff",
-                              border: "1px solid rgba(255,255,255,0.1)",
+                              background: "color-mix(in srgb, var(--text) 6%, transparent)", color: "var(--text)",
+                              border: "1px solid color-mix(in srgb, var(--text) 10%, transparent)",
                               fontSize: 11, fontWeight: 600, cursor: "pointer",
                             }}
                           >
@@ -2369,22 +1847,22 @@ export default function ContentArea({
 
           {/* Curated Stations */}
           <div>
-            <div style={{ fontSize: 10, fontWeight: 800, color: "#5A5D70", letterSpacing: "0.14em", textTransform: "uppercase", marginBottom: 14 }}>
+            <div style={{ fontSize: 10, fontWeight: 800, color: "var(--text-3)", letterSpacing: "0.14em", textTransform: "uppercase", marginBottom: 14 }}>
               Featured Curated Playlists & Stations
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 14 }}>
               {(activeView === "provider-spotify"
-                ? SPOTIFY_FEATURED
+                ? curated.featured.spotify
                 : activeView === "provider-ytmusic"
-                ? YTMUSIC_FEATURED
-                : SOUNDCLOUD_FEATURED
+                ? curated.featured.ytmusic
+                : curated.featured.soundcloud
               ).map((card) => (
                 <div
                   key={card.title}
                   style={{
                     padding: "18px", borderRadius: 16,
-                    background: "rgba(255,255,255,0.03)",
-                    border: "1px solid rgba(255,255,255,0.06)",
+                    background: "color-mix(in srgb, var(--text) 3%, transparent)",
+                    border: "1px solid color-mix(in srgb, var(--text) 6%, transparent)",
                     display: "flex", flexDirection: "column", justifyContent: "space-between",
                     gap: 12,
                     transition: "all 0.2s ease",
@@ -2396,10 +1874,10 @@ export default function ContentArea({
                       background: card.color, marginBottom: 10,
                       boxShadow: `0 0 10px ${card.color}`,
                     }} />
-                    <h4 style={{ fontSize: 15, fontWeight: 800, color: "#fff", margin: "0 0 6px 0" }}>
+                    <h4 style={{ fontSize: 15, fontWeight: 800, color: "var(--text)", margin: "0 0 6px 0" }}>
                       {card.title}
                     </h4>
-                    <p style={{ fontSize: 11, color: "#9FA2B4", margin: 0, lineHeight: 1.4 }}>
+                    <p style={{ fontSize: 11, color: "var(--text-2)", margin: 0, lineHeight: 1.4 }}>
                       {card.desc}
                     </p>
                   </div>
@@ -2413,7 +1891,7 @@ export default function ContentArea({
                         flex: 1, padding: "8px 12px", borderRadius: 10,
                         background: `${card.color}25`,
                         border: `1px solid ${card.color}60`,
-                        color: "#fff", fontSize: 11, fontWeight: 700, cursor: "pointer",
+                        color: "var(--text)", fontSize: 11, fontWeight: 700, cursor: "pointer",
                         display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
                       }}
                     >
@@ -2430,7 +1908,7 @@ export default function ContentArea({
       {/* Featured Playlists Grid */}
       {!activePlaylist && activeView === "home" && (
         <div style={{ marginBottom: 28 }}>
-          <div style={{ fontSize: 9, fontWeight: 800, color: "#5A5D70", letterSpacing: "0.14em", textTransform: "uppercase", marginBottom: 14 }}>
+          <div style={{ fontSize: 9, fontWeight: 800, color: "var(--text-3)", letterSpacing: "0.14em", textTransform: "uppercase", marginBottom: 14 }}>
             Featured Playlists
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))", gap: 14 }}>
@@ -2445,8 +1923,8 @@ export default function ContentArea({
                   onMouseLeave={() => setHoveredPlaylist(null)}
                   style={{
                     padding: "16px", borderRadius: 16,
-                    background: isHovered ? "rgba(255,255,255,0.07)" : "rgba(255,255,255,0.03)",
-                    border: "1px solid rgba(255,255,255,0.06)",
+                    background: isHovered ? "color-mix(in srgb, var(--text) 7%, transparent)" : "color-mix(in srgb, var(--text) 3%, transparent)",
+                    border: "1px solid color-mix(in srgb, var(--text) 6%, transparent)",
                     cursor: "pointer",
                     transition: "all 0.2s ease",
                     transform: isHovered ? "translateY(-2px) scale(1.02)" : "none",
@@ -2465,10 +1943,10 @@ export default function ContentArea({
                       <circle cx="18" cy="16" r="3" />
                     </svg>
                   </div>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: "#fff", marginBottom: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text)", marginBottom: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {pl.name}
                   </div>
-                  <div style={{ fontSize: 10, color: "#5A5D70", fontWeight: 600 }}>
+                  <div style={{ fontSize: 10, color: "var(--text-3)", fontWeight: 600 }}>
                     {pl.count} {pl.count === 1 ? "song" : "songs"}
                   </div>
                 </div>
@@ -2491,20 +1969,20 @@ export default function ContentArea({
             {/* Download Panel */}
             <div style={{
               padding: "24px 28px", borderRadius: 20,
-              background: "rgba(20,20,32,0.4)",
-              backdropFilter: "blur(20px)",
-              border: "1px solid rgba(255,255,255,0.06)",
+              background: "color-mix(in srgb, var(--surface) 90%, transparent)",
+              
+              border: "1px solid color-mix(in srgb, var(--text) 6%, transparent)",
               boxShadow: "0 8px 32px rgba(0,0,0,0.3)",
               display: "flex",
               flexDirection: "column",
               gap: 16,
             }}>
 
-              <div style={{ fontSize: 10, fontWeight: 800, color: "#8A2BE2", letterSpacing: "0.14em", textTransform: "uppercase" }}>
+              <div style={{ fontSize: 10, fontWeight: 800, color: "var(--accent)", letterSpacing: "0.14em", textTransform: "uppercase" }}>
                 Downloader
               </div>
-              <h3 style={{ fontSize: 16, fontWeight: 900, color: "#fff", margin: 0 }}>Paste URL to Download</h3>
-              <p style={{ fontSize: 11, color: "#9FA2B4", margin: "0 0 8px 0", lineHeight: 1.4 }}>
+              <h3 style={{ fontSize: 16, fontWeight: 900, color: "var(--text)", margin: 0 }}>Paste URL to Download</h3>
+              <p style={{ fontSize: 11, color: "var(--text-2)", margin: "0 0 8px 0", lineHeight: 1.4 }}>
                 Supports Spotify tracks, YouTube videos/playlists. Preview before you download!
               </p>
               
@@ -2518,9 +1996,9 @@ export default function ContentArea({
                   style={{
                     width: "100%", padding: "12px 14px",
                     borderRadius: 12,
-                    background: "rgba(255,255,255,0.04)",
-                    border: "1px solid rgba(255,255,255,0.08)",
-                    color: "#fff", fontSize: 12, fontWeight: 500,
+                    background: "color-mix(in srgb, var(--text) 4%, transparent)",
+                    border: "1px solid color-mix(in srgb, var(--text) 8%, transparent)",
+                    color: "var(--text)", fontSize: 12, fontWeight: 500,
                     outline: "none", boxSizing: "border-box",
                   }}
                 />
@@ -2534,20 +2012,20 @@ export default function ContentArea({
                     disabled={previewLoading || isDownloading || !downloadUrl.trim()}
                     style={{
                       flex: 1, padding: "12px", borderRadius: 12,
-                      background: previewLoading ? "rgba(0,240,255,0.15)" : "rgba(0,240,255,0.12)",
-                      color: "#00F0FF",
-                      border: "1px solid rgba(0,240,255,0.25)",
+                      background: previewLoading ? "color-mix(in srgb, var(--accent) 15%, transparent)" : "color-mix(in srgb, var(--accent) 12%, transparent)",
+                      color: "var(--accent)",
+                      border: "1px solid color-mix(in srgb, var(--accent) 25%, transparent)",
                       fontSize: 12, fontWeight: 800,
                       cursor: previewLoading || isDownloading || !downloadUrl.trim() ? "not-allowed" : "pointer",
                       letterSpacing: "0.04em", textTransform: "uppercase",
-                      boxShadow: downloadUrl.trim() && !previewLoading ? "0 4px 16px rgba(0,240,255,0.15)" : "none",
+                      boxShadow: downloadUrl.trim() && !previewLoading ? "0 4px 16px color-mix(in srgb, var(--accent) 15%, transparent)" : "none",
                       transition: "all 0.15s ease",
                       display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
                     }}
                   >
                     {previewLoading ? (
                       <>
-                        <div className="animate-spin-slow" style={{ width: 12, height: 12, border: "2px solid #00F0FF", borderTopColor: "transparent", borderRadius: "50%" }} />
+                        <div className="animate-spin-slow" style={{ width: 12, height: 12, border: "2px solid var(--accent)", borderTopColor: "transparent", borderRadius: "50%" }} />
                         Fetching...
                       </>
                     ) : (
@@ -2567,11 +2045,11 @@ export default function ContentArea({
                     disabled={isDownloading || !downloadUrl.trim()}
                     style={{
                       flex: 1.4, padding: "12px", borderRadius: 12,
-                      background: isDownloading ? "rgba(138,43,226,0.3)" : "#8A2BE2",
-                      color: "#fff", border: "none", fontSize: 12, fontWeight: 800,
+                      background: isDownloading ? "color-mix(in srgb, var(--accent) 30%, transparent)" : "var(--accent)",
+                      color: "var(--accent-fg)", border: "none", fontSize: 12, fontWeight: 800,
                       cursor: isDownloading || !downloadUrl.trim() ? "not-allowed" : "pointer",
                       letterSpacing: "0.06em", textTransform: "uppercase",
-                      boxShadow: !isDownloading && downloadUrl.trim() ? "0 4px 20px rgba(138,43,226,0.4)" : "none",
+                      boxShadow: !isDownloading && downloadUrl.trim() ? "0 4px 20px color-mix(in srgb, var(--accent) 40%, transparent)" : "none",
                       transition: "all 0.15s ease",
                       display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
                     }}
@@ -2592,6 +2070,12 @@ export default function ContentArea({
                       </>
                     )}
                   </button>
+                  {isDownloading && (
+                    <button type="button" onClick={cancelAllDownloads}
+                      style={{ padding: "0 14px", borderRadius: 12, border: "1px solid rgba(239,68,68,0.4)", background: "transparent", color: "#EF4444", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
+                      Cancel
+                    </button>
+                  )}
                 </div>
               </form>
 
@@ -2599,14 +2083,14 @@ export default function ContentArea({
               {urlHistory.length > 0 && (
                 <div style={{ marginTop: 4 }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
-                    <span style={{ fontSize: 10, fontWeight: 800, color: "#5A5D70", letterSpacing: "0.08em", textTransform: "uppercase" }}>
+                    <span style={{ fontSize: 10, fontWeight: 800, color: "var(--text-3)", letterSpacing: "0.08em", textTransform: "uppercase" }}>
                       Recent Links
                     </span>
                     <button
                       type="button"
                       onClick={clearHistory}
                       style={{
-                        background: "none", border: "none", color: "#EC4899", fontSize: 9, fontWeight: 700, cursor: "pointer", padding: 0
+                        background: "none", border: "none", color: "var(--accent)", fontSize: 9, fontWeight: 700, cursor: "pointer", padding: 0
                       }}
                     >
                       Clear
@@ -2625,26 +2109,26 @@ export default function ContentArea({
                         }}
                         style={{
                           fontSize: 10.5,
-                          color: "#9FA2B4",
+                          color: "var(--text-2)",
                           cursor: isDownloading ? "not-allowed" : "pointer",
                           whiteSpace: "nowrap",
                           overflow: "hidden",
                           textOverflow: "ellipsis",
-                          background: "rgba(255,255,255,0.02)",
+                          background: "color-mix(in srgb, var(--text) 2%, transparent)",
                           padding: "5px 9px",
                           borderRadius: 8,
-                          border: "1px solid rgba(255,255,255,0.04)",
+                          border: "1px solid color-mix(in srgb, var(--text) 4%, transparent)",
                           transition: "all 0.15s ease",
                         }}
                         onMouseEnter={(e) => {
                           if (!isDownloading) {
-                            e.currentTarget.style.color = "#fff";
-                            e.currentTarget.style.background = "rgba(255,255,255,0.05)";
+                            e.currentTarget.style.color = "var(--text)";
+                            e.currentTarget.style.background = "color-mix(in srgb, var(--text) 5%, transparent)";
                           }
                         }}
                         onMouseLeave={(e) => {
-                          e.currentTarget.style.color = "#9FA2B4";
-                          e.currentTarget.style.background = "rgba(255,255,255,0.02)";
+                          e.currentTarget.style.color = "var(--text-2)";
+                          e.currentTarget.style.background = "color-mix(in srgb, var(--text) 2%, transparent)";
                         }}
                       >
                         {hUrl}
@@ -2658,8 +2142,8 @@ export default function ContentArea({
               {previewInfo && (
                 <div style={{
                   borderRadius: 16,
-                  background: "rgba(255,255,255,0.03)",
-                  border: "1px solid rgba(255,255,255,0.08)",
+                  background: "color-mix(in srgb, var(--text) 3%, transparent)",
+                  border: "1px solid color-mix(in srgb, var(--text) 8%, transparent)",
                   overflow: "hidden",
                   animation: "fade-in 0.3s ease",
                 }}>
@@ -2675,7 +2159,7 @@ export default function ContentArea({
                     {/* Gradient overlay */}
                     <div style={{
                       position: "absolute", inset: 0,
-                      background: "linear-gradient(to bottom, rgba(0,0,0,0.1) 0%, rgba(10,10,18,0.95) 100%)",
+                      background: "linear-gradient(to bottom, rgba(0,0,0,0.1) 0%, var(--bg) 100%)",
                     }} />
 
                     {/* Play/Pause overlay button */}
@@ -2686,13 +2170,13 @@ export default function ContentArea({
                         top: "50%", left: "50%",
                         transform: "translate(-50%, -50%)",
                         width: 48, height: 48, borderRadius: "50%",
-                        background: isPreviewing ? "rgba(0,240,255,0.85)" : "rgba(255,255,255,0.85)",
+                        background: isPreviewing ? "color-mix(in srgb, var(--accent) 85%, transparent)" : "color-mix(in srgb, var(--text) 85%, transparent)",
                         border: "none",
                         display: "flex", alignItems: "center", justifyContent: "center",
                         cursor: "pointer",
-                        boxShadow: `0 0 20px ${isPreviewing ? "rgba(0,240,255,0.5)" : "rgba(255,255,255,0.3)"}`,
+                        boxShadow: `0 0 20px ${isPreviewing ? "color-mix(in srgb, var(--accent) 50%, transparent)" : "color-mix(in srgb, var(--text) 30%, transparent)"}`,
                         transition: "all 0.2s ease",
-                        color: "#000",
+                        color: "var(--bg)",
                       }}
                     >
                       {isPreviewing ? (
@@ -2711,11 +2195,11 @@ export default function ContentArea({
                     {isPreviewing && (
                       <div style={{
                         position: "absolute", top: 10, right: 10,
-                        background: "#00F0FF", color: "#000",
+                        background: "var(--accent)", color: "var(--accent-fg)",
                         fontSize: 9, fontWeight: 900, padding: "3px 8px",
                         borderRadius: 4, letterSpacing: "0.1em",
                         textTransform: "uppercase",
-                        boxShadow: "0 0 10px rgba(0,240,255,0.5)",
+                        boxShadow: "0 0 10px color-mix(in srgb, var(--accent) 50%, transparent)",
                       }}>
                         ◉ LIVE
                       </div>
@@ -2730,13 +2214,13 @@ export default function ContentArea({
                   }}>
                     <div style={{ minWidth: 0, flex: 1 }}>
                       <div style={{
-                        fontSize: 13, fontWeight: 800, color: "#fff",
+                        fontSize: 13, fontWeight: 800, color: "var(--text)",
                         overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
                         marginBottom: 3,
                       }}>
                         {previewInfo.title}
                       </div>
-                      <div style={{ fontSize: 11, color: "#9FA2B4", fontWeight: 600 }}>
+                      <div style={{ fontSize: 11, color: "var(--text-2)", fontWeight: 600 }}>
                         {previewInfo.artist}
                       </div>
                     </div>
@@ -2769,9 +2253,9 @@ export default function ContentArea({
                         onClick={stopPreview}
                         style={{
                           padding: "6px 10px", borderRadius: 8,
-                          background: "rgba(255,255,255,0.05)",
-                          border: "1px solid rgba(255,255,255,0.08)",
-                          color: "#5A5D70",
+                          background: "color-mix(in srgb, var(--text) 5%, transparent)",
+                          border: "1px solid color-mix(in srgb, var(--text) 8%, transparent)",
+                          color: "var(--text-3)",
                           cursor: "pointer",
                           display: "flex", alignItems: "center", justifyContent: "center",
                         }}
@@ -2803,12 +2287,12 @@ export default function ContentArea({
               {(downloadStatus || downloadError) && (
                 <div style={{
                   padding: 12, borderRadius: 10,
-                  background: downloadError ? "rgba(239,68,68,0.07)" : "rgba(255,255,255,0.02)",
-                  border: `1px solid ${downloadError ? "rgba(239,68,68,0.15)" : "rgba(255,255,255,0.06)"}`,
+                  background: downloadError ? "rgba(239,68,68,0.07)" : "color-mix(in srgb, var(--text) 2%, transparent)",
+                  border: `1px solid ${downloadError ? "rgba(239,68,68,0.15)" : "color-mix(in srgb, var(--text) 6%, transparent)"}`,
                   fontSize: 11,
                   fontFamily: "monospace",
                   wordBreak: "break-all",
-                  color: downloadError ? "#EF4444" : "#9FA2B4",
+                  color: downloadError ? "#EF4444" : "var(--text-2)",
                 }}>
                   {downloadError ? (
                     <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
@@ -2825,9 +2309,9 @@ export default function ContentArea({
             {/* Dashboard / Info panel */}
             <div style={{
               padding: "24px 28px", borderRadius: 20,
-              background: "rgba(20,20,32,0.4)",
-              backdropFilter: "blur(20px)",
-              border: "1px solid rgba(255,255,255,0.06)",
+              background: "color-mix(in srgb, var(--surface) 90%, transparent)",
+              
+              border: "1px solid color-mix(in srgb, var(--text) 6%, transparent)",
               boxShadow: "0 8px 32px rgba(0,0,0,0.3)",
               display: "flex",
               flexDirection: "column",
@@ -2835,60 +2319,60 @@ export default function ContentArea({
               gap: 16,
             }}>
               <div>
-                <div style={{ fontSize: 10, fontWeight: 800, color: "#EC4899", letterSpacing: "0.14em", textTransform: "uppercase", marginBottom: 16 }}>
+                <div style={{ fontSize: 10, fontWeight: 800, color: "var(--accent)", letterSpacing: "0.14em", textTransform: "uppercase", marginBottom: 16 }}>
                   System Status
                 </div>
                 
                 <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                    <span style={{ fontSize: 12, color: "#9FA2B4", fontWeight: 600 }}>yt-dlp (YouTube engine)</span>
+                    <span style={{ fontSize: 12, color: "var(--text-2)", fontWeight: 600 }}>yt-dlp (YouTube engine)</span>
                     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                       <span style={{
                         width: 7, height: 7, borderRadius: "50%",
                         background: ytdlpStatus && ytdlpStatus !== "not_found" ? "#1DB954" : "#EF4444",
                         boxShadow: `0 0 8px ${ytdlpStatus && ytdlpStatus !== "not_found" ? "#1DB954" : "#EF4444"}`,
                       }} />
-                      <span style={{ fontSize: 11, fontWeight: 700, color: "#fff" }}>
+                      <span style={{ fontSize: 11, fontWeight: 700, color: "var(--text)" }}>
                         {ytdlpStatus === null ? "Checking..." : ytdlpStatus === "not_found" ? "Not Installed" : ytdlpStatus}
                       </span>
                     </div>
                   </div>
 
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                    <span style={{ fontSize: 12, color: "#9FA2B4", fontWeight: 600 }}>spotdl (Spotify engine)</span>
+                    <span style={{ fontSize: 12, color: "var(--text-2)", fontWeight: 600 }}>spotdl (Spotify engine)</span>
                     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                       <span style={{
                         width: 7, height: 7, borderRadius: "50%",
                         background: spotdlStatus && spotdlStatus !== "not_found" ? "#1DB954" : "#EF4444",
                         boxShadow: `0 0 8px ${spotdlStatus && spotdlStatus !== "not_found" ? "#1DB954" : "#EF4444"}`,
                       }} />
-                      <span style={{ fontSize: 11, fontWeight: 700, color: "#fff" }}>
+                      <span style={{ fontSize: 11, fontWeight: 700, color: "var(--text)" }}>
                         {spotdlStatus === null ? "Checking..." : spotdlStatus === "not_found" ? "Not Installed" : spotdlStatus}
                       </span>
                     </div>
                   </div>
 
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                    <span style={{ fontSize: 12, color: "#9FA2B4", fontWeight: 600 }}>ffmpeg (audio codec)</span>
+                    <span style={{ fontSize: 12, color: "var(--text-2)", fontWeight: 600 }}>ffmpeg (audio codec)</span>
                     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                       <span style={{
                         width: 7, height: 7, borderRadius: "50%",
                         background: ffmpegStatus && ffmpegStatus !== "not_found" ? "#1DB954" : "#EF4444",
                         boxShadow: `0 0 8px ${ffmpegStatus && ffmpegStatus !== "not_found" ? "#1DB954" : "#EF4444"}`,
                       }} />
-                      <span style={{ fontSize: 11, fontWeight: 700, color: "#fff" }}>
+                      <span style={{ fontSize: 11, fontWeight: 700, color: "var(--text)" }}>
                         {ffmpegStatus === null ? "Checking..." : ffmpegStatus === "not_found" ? "Not Installed" : "Installed"}
                       </span>
                     </div>
                   </div>
 
-                  <div style={{ height: 1, background: "rgba(255,255,255,0.05)", margin: "4px 0" }} />
+                  <div style={{ height: 1, background: "color-mix(in srgb, var(--text) 5%, transparent)", margin: "4px 0" }} />
 
                   <div>
-                    <span style={{ fontSize: 11, color: "#5A5D70", fontWeight: 800, textTransform: "uppercase", display: "block", marginBottom: 4 }}>
+                    <span style={{ fontSize: 11, color: "var(--text-3)", fontWeight: 800, textTransform: "uppercase", display: "block", marginBottom: 4 }}>
                       Download Folder
                     </span>
-                    <span style={{ fontSize: 11, color: "#fff", fontFamily: "monospace", wordBreak: "break-all" }}>
+                    <span style={{ fontSize: 11, color: "var(--text)", fontFamily: "monospace", wordBreak: "break-all" }}>
                       {downloadDir || "Resolving directory..."}
                     </span>
                   </div>
@@ -2899,9 +2383,9 @@ export default function ContentArea({
                 onClick={handleScan}
                 style={{
                   padding: "10px", borderRadius: 10,
-                  background: "rgba(255,255,255,0.05)",
-                  border: "1px solid rgba(255,255,255,0.08)",
-                  color: "#fff", fontSize: 11, fontWeight: 700,
+                  background: "color-mix(in srgb, var(--text) 5%, transparent)",
+                  border: "1px solid color-mix(in srgb, var(--text) 8%, transparent)",
+                  color: "var(--text)", fontSize: 11, fontWeight: 700,
                   cursor: "pointer",
                   display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
                   transition: "all 0.15s ease",
@@ -2920,10 +2404,10 @@ export default function ContentArea({
           {/* Local Scanned Tracks list */}
           <div>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
-              <div style={{ fontSize: 9, fontWeight: 800, color: "#5A5D70", letterSpacing: "0.14em", textTransform: "uppercase" }}>
+              <div style={{ fontSize: 9, fontWeight: 800, color: "var(--text-3)", letterSpacing: "0.14em", textTransform: "uppercase" }}>
                 Scanned Offline Tracks
               </div>
-              <span style={{ fontSize: 10, color: "#9FA2B4", fontWeight: 600 }}>
+              <span style={{ fontSize: 10, color: "var(--text-2)", fontWeight: 600 }}>
                 {localTracks.length} {localTracks.length === 1 ? "track" : "tracks"}
               </span>
             </div>
@@ -2931,9 +2415,9 @@ export default function ContentArea({
             {localTracks.length === 0 ? (
               <div style={{
                 padding: "40px", textAlign: "center",
-                border: "1px dashed rgba(255,255,255,0.07)", borderRadius: 16,
+                border: "1px dashed color-mix(in srgb, var(--text) 7%, transparent)", borderRadius: 16,
               }}>
-                <p style={{ color: "#5A5D70", fontSize: 13, fontWeight: 500, margin: "0 0 4px 0" }}>No offline tracks found</p>
+                <p style={{ color: "var(--text-3)", fontSize: 13, fontWeight: 500, margin: "0 0 4px 0" }}>No offline tracks found</p>
                 <p style={{ color: "#3E4150", fontSize: 11, fontWeight: 500, margin: 0 }}>
                   Paste a link above to download, or make sure your audio files are inside the MG-Lyrics folder.
                 </p>
@@ -2953,21 +2437,21 @@ export default function ContentArea({
                         display: "flex", alignItems: "center", justifyContent: "space-between",
                         padding: "10px 14px", borderRadius: 14,
                         background: isCurrent
-                          ? "rgba(138,43,226,0.12)"
-                          : isHovered ? "rgba(255,255,255,0.05)" : "transparent",
-                        border: `1px solid ${isCurrent ? "rgba(138,43,226,0.3)" : "transparent"}`,
+                          ? "color-mix(in srgb, var(--accent) 12%, transparent)"
+                          : isHovered ? "color-mix(in srgb, var(--text) 5%, transparent)" : "transparent",
+                        border: `1px solid ${isCurrent ? "color-mix(in srgb, var(--accent) 30%, transparent)" : "transparent"}`,
                         cursor: "pointer",
                         transition: "all 0.15s ease",
                       }}
                     >
                       <div style={{ display: "flex", alignItems: "center", gap: 14, minWidth: 0, flex: 1 }}>
-                        <span style={{ width: 20, textAlign: "center", fontSize: 11, fontWeight: 700, color: "#5A5D70", flexShrink: 0 }}>
+                        <span style={{ width: 20, textAlign: "center", fontSize: 11, fontWeight: 700, color: "var(--text-3)", flexShrink: 0 }}>
                           {isCurrent && isPlaying ? (
                             <span style={{ display: "flex", alignItems: "flex-end", gap: "2px", height: 14, justifyContent: "center" }}>
                               {[1, 2, 3].map((i) => (
                                 <span key={i} style={{
                                   display: "block", width: 3, borderRadius: 2,
-                                  background: "#8A2BE2",
+                                  background: "var(--accent)",
                                   animation: `eq-bar ${0.5 + i * 0.15}s ease-in-out infinite`,
                                   height: `${4 + i * 3}px`,
                                 }} />
@@ -2982,27 +2466,27 @@ export default function ContentArea({
                           width: 40, height: 40, borderRadius: 10, flexShrink: 0,
                           backgroundImage: `url(${track.cover})`,
                           backgroundSize: "cover", backgroundPosition: "center",
-                          border: "1px solid rgba(255,255,255,0.06)",
-                          boxShadow: isCurrent ? "0 0 12px rgba(138,43,226,0.3)" : "none",
+                          border: "1px solid color-mix(in srgb, var(--text) 6%, transparent)",
+                          boxShadow: isCurrent ? "0 0 12px color-mix(in srgb, var(--accent) 30%, transparent)" : "none",
                         }} />
 
                         <div style={{ minWidth: 0 }}>
                           <div style={{
                             fontSize: 13, fontWeight: 700,
-                            color: isCurrent ? "#8A2BE2" : "#fff",
+                            color: isCurrent ? "var(--accent)" : "var(--text)",
                             overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
                             marginBottom: 2,
                           }}>
                             {track.title}
                           </div>
-                          <div style={{ fontSize: 11, color: "#9FA2B4", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          <div style={{ fontSize: 11, color: "var(--text-2)", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                             {track.artist}
                           </div>
                         </div>
                       </div>
 
                       <div style={{ display: "flex", alignItems: "center", gap: 24, flexShrink: 0, paddingLeft: 16 }}>
-                        <span style={{ fontSize: 10, color: "#5A5D70", background: "rgba(255,255,255,0.05)", padding: "2px 8px", borderRadius: 6, fontWeight: 700, textTransform: "uppercase" }}>
+                        <span style={{ fontSize: 10, color: "var(--text-3)", background: "color-mix(in srgb, var(--text) 5%, transparent)", padding: "2px 8px", borderRadius: 6, fontWeight: 700, textTransform: "uppercase" }}>
                           Local
                         </span>
                       </div>
@@ -3021,24 +2505,24 @@ export default function ContentArea({
           {/* Search & Fetch Playlists Section */}
           <div style={{
             padding: "24px 28px", borderRadius: 20,
-            background: "rgba(20,20,32,0.45)",
-            backdropFilter: "blur(20px)",
-            border: "1px solid rgba(255,255,255,0.07)",
+            background: "color-mix(in srgb, var(--surface) 90%, transparent)",
+            
+            border: "1px solid color-mix(in srgb, var(--text) 7%, transparent)",
             boxShadow: "0 8px 32px rgba(0,0,0,0.3)",
           }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
-              <div style={{ fontSize: 10, fontWeight: 800, color: "#8A2BE2", letterSpacing: "0.14em", textTransform: "uppercase" }}>
+              <div style={{ fontSize: 10, fontWeight: 800, color: "var(--accent)", letterSpacing: "0.14em", textTransform: "uppercase" }}>
                 Top Playlists & Live Explorer
               </div>
-              <span style={{ fontSize: 10, fontWeight: 700, color: "rgba(255,255,255,0.4)" }}>
+              <span style={{ fontSize: 10, fontWeight: 700, color: "color-mix(in srgb, var(--text) 40%, transparent)" }}>
                 36+ Curated Top Playlists · Live Spotify & YouTube Search
               </span>
             </div>
 
-            <h3 style={{ fontSize: 17, fontWeight: 900, color: "#fff", margin: "0 0 6px 0" }}>
+            <h3 style={{ fontSize: 17, fontWeight: 900, color: "var(--text)", margin: "0 0 6px 0" }}>
               Fetch & Stream All Spotify and YouTube Top Playlists
             </h3>
-            <p style={{ fontSize: 11, color: "#9FA2B4", margin: "0 0 16px 0", lineHeight: 1.4 }}>
+            <p style={{ fontSize: 11, color: "var(--text-2)", margin: "0 0 16px 0", lineHeight: 1.4 }}>
               Search across YouTube & Spotify for any top charts, playlists, and moods, or paste a direct public playlist link to load and stream instantly.
             </p>
 
@@ -3070,15 +2554,15 @@ export default function ContentArea({
                 style={{
                   padding: "0 14px", height: "42px",
                   borderRadius: 12,
-                  background: "rgba(255,255,255,0.06)",
-                  border: "1px solid rgba(255,255,255,0.1)",
-                  color: "#fff", fontSize: 11.5, fontWeight: 700,
+                  background: "color-mix(in srgb, var(--text) 6%, transparent)",
+                  border: "1px solid color-mix(in srgb, var(--text) 10%, transparent)",
+                  color: "var(--text)", fontSize: 11.5, fontWeight: 700,
                   outline: "none", cursor: "pointer",
                 }}
               >
-                <option value="all" className="bg-[#10101a] text-white">All Providers</option>
-                <option value="spotify" className="bg-[#10101a] text-white">Spotify</option>
-                <option value="youtube" className="bg-[#10101a] text-white">YouTube</option>
+                <option value="all" className="bg-[var(--bg)] text-[var(--text)]">All Providers</option>
+                <option value="spotify" className="bg-[var(--bg)] text-[var(--text)]">Spotify</option>
+                <option value="youtube" className="bg-[var(--bg)] text-[var(--text)]">YouTube</option>
               </select>
 
               {/* Text Input */}
@@ -3094,9 +2578,9 @@ export default function ContentArea({
                 style={{
                   flex: 1, minWidth: "220px", height: "42px", padding: "0 16px",
                   borderRadius: 12,
-                  background: "rgba(255,255,255,0.04)",
-                  border: "1px solid rgba(255,255,255,0.08)",
-                  color: "#fff", fontSize: 12, fontWeight: 500,
+                  background: "color-mix(in srgb, var(--text) 4%, transparent)",
+                  border: "1px solid color-mix(in srgb, var(--text) 8%, transparent)",
+                  color: "var(--text)", fontSize: 12, fontWeight: 500,
                   outline: "none", boxSizing: "border-box",
                 }}
               />
@@ -3108,14 +2592,14 @@ export default function ContentArea({
                 style={{
                   padding: "0 20px", height: "42px", borderRadius: 12,
                   background: (isSearchingOnlinePlaylists || discoverLoading)
-                    ? "rgba(138,43,226,0.3)"
-                    : "linear-gradient(135deg, #8A2BE2, #6366f1)",
-                  color: "#fff", border: "none", fontSize: 12, fontWeight: 800,
+                    ? "color-mix(in srgb, var(--accent) 30%, transparent)"
+                    : "var(--surface-2)",
+                  color: "var(--text)", border: "none", fontSize: 12, fontWeight: 800,
                   cursor: (isSearchingOnlinePlaylists || discoverLoading) || !(onlinePlaylistQuery || discoverUrl).trim()
                     ? "not-allowed" : "pointer",
                   letterSpacing: "0.04em",
                   boxShadow: !(isSearchingOnlinePlaylists || discoverLoading) && (onlinePlaylistQuery || discoverUrl).trim()
-                    ? "0 4px 18px rgba(138,43,226,0.35)" : "none",
+                    ? "0 4px 18px color-mix(in srgb, var(--accent) 35%, transparent)" : "none",
                   transition: "all 0.15s ease",
                   display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
                 }}
@@ -3158,13 +2642,13 @@ export default function ContentArea({
                 disabled={isSearchingOnlinePlaylists || discoverLoading}
                 style={{
                   padding: "0 16px", height: "42px", borderRadius: 12,
-                  background: "rgba(0,240,255,0.08)",
-                  border: "1px solid rgba(0,240,255,0.25)",
-                  color: "#00F0FF", fontSize: 12, fontWeight: 800,
+                  background: "color-mix(in srgb, var(--accent) 8%, transparent)",
+                  border: "1px solid color-mix(in srgb, var(--accent) 25%, transparent)",
+                  color: "var(--accent)", fontSize: 12, fontWeight: 800,
                   cursor: isSearchingOnlinePlaylists || discoverLoading ? "not-allowed" : "pointer",
                   display: "flex", alignItems: "center", justifyContent: "center", gap: 7,
                   transition: "all 0.15s ease",
-                  boxShadow: "0 2px 10px rgba(0,240,255,0.1)",
+                  boxShadow: "0 2px 10px color-mix(in srgb, var(--accent) 10%, transparent)",
                 }}
                 title="Shuffle & fetch fresh live trending tracks from Spotify & YouTube"
               >
@@ -3177,7 +2661,7 @@ export default function ContentArea({
 
             {/* Quick search preset chips */}
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 14, flexWrap: "wrap" }}>
-              <span style={{ fontSize: 10, fontWeight: 700, color: "rgba(255,255,255,0.4)" }}>Trending:</span>
+              <span style={{ fontSize: 10, fontWeight: 700, color: "color-mix(in srgb, var(--text) 40%, transparent)" }}>Trending:</span>
               {[
                 "Today's Top Hits",
                 "Top 50 Global",
@@ -3200,20 +2684,20 @@ export default function ContentArea({
                   }}
                   style={{
                     padding: "4px 10px", borderRadius: 8,
-                    background: "rgba(255,255,255,0.04)",
-                    border: "1px solid rgba(255,255,255,0.08)",
-                    color: "rgba(255,255,255,0.7)", fontSize: 10.5, fontWeight: 600,
+                    background: "color-mix(in srgb, var(--text) 4%, transparent)",
+                    border: "1px solid color-mix(in srgb, var(--text) 8%, transparent)",
+                    color: "color-mix(in srgb, var(--text) 70%, transparent)", fontSize: 10.5, fontWeight: 600,
                     cursor: "pointer", transition: "all 0.15s ease",
                   }}
                   onMouseEnter={(e) => {
-                    e.currentTarget.style.backgroundColor = "rgba(138,43,226,0.18)";
-                    e.currentTarget.style.borderColor = "rgba(138,43,226,0.4)";
-                    e.currentTarget.style.color = "#fff";
+                    e.currentTarget.style.backgroundColor = "color-mix(in srgb, var(--accent) 18%, transparent)";
+                    e.currentTarget.style.borderColor = "color-mix(in srgb, var(--accent) 40%, transparent)";
+                    e.currentTarget.style.color = "var(--text)";
                   }}
                   onMouseLeave={(e) => {
-                    e.currentTarget.style.backgroundColor = "rgba(255,255,255,0.04)";
-                    e.currentTarget.style.borderColor = "rgba(255,255,255,0.08)";
-                    e.currentTarget.style.color = "rgba(255,255,255,0.7)";
+                    e.currentTarget.style.backgroundColor = "color-mix(in srgb, var(--text) 4%, transparent)";
+                    e.currentTarget.style.borderColor = "color-mix(in srgb, var(--text) 8%, transparent)";
+                    e.currentTarget.style.color = "color-mix(in srgb, var(--text) 70%, transparent)";
                   }}
                 >
                   {chip}
@@ -3250,8 +2734,8 @@ export default function ContentArea({
             <div>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <div style={{ width: 8, height: 8, borderRadius: "50%", background: "#00F0FF", boxShadow: "0 0 8px #00F0FF" }} />
-                  <span style={{ fontSize: 11, fontWeight: 800, color: "#fff", textTransform: "uppercase", letterSpacing: "0.1em" }}>
+                  <div style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--accent)", boxShadow: "0 0 8px var(--accent)" }} />
+                  <span style={{ fontSize: 11, fontWeight: 800, color: "var(--text)", textTransform: "uppercase", letterSpacing: "0.1em" }}>
                     Online Playlist Search Results ({onlinePlaylists.length})
                   </span>
                 </div>
@@ -3259,9 +2743,9 @@ export default function ContentArea({
                   onClick={() => setOnlinePlaylists([])}
                   style={{
                     padding: "4px 10px", borderRadius: 8,
-                    background: "rgba(255,255,255,0.05)",
-                    border: "1px solid rgba(255,255,255,0.1)",
-                    color: "rgba(255,255,255,0.6)", fontSize: 10, fontWeight: 700,
+                    background: "color-mix(in srgb, var(--text) 5%, transparent)",
+                    border: "1px solid color-mix(in srgb, var(--text) 10%, transparent)",
+                    color: "color-mix(in srgb, var(--text) 60%, transparent)", fontSize: 10, fontWeight: 700,
                     cursor: "pointer",
                   }}
                 >
@@ -3276,8 +2760,8 @@ export default function ContentArea({
                     onClick={() => { setDiscoverUrl(pl.url); handleLoadPlaylist(pl.url); }}
                     style={{
                       padding: "16px", borderRadius: 18,
-                      background: "rgba(255,255,255,0.03)",
-                      border: "1px solid rgba(255,255,255,0.07)",
+                      background: "color-mix(in srgb, var(--text) 3%, transparent)",
+                      border: "1px solid color-mix(in srgb, var(--text) 7%, transparent)",
                       cursor: "pointer",
                       transition: "all 0.25s ease",
                       display: "flex", flexDirection: "column", gap: 12,
@@ -3285,14 +2769,14 @@ export default function ContentArea({
                     }}
                     onMouseEnter={(e) => {
                       e.currentTarget.style.transform = "translateY(-4px)";
-                      e.currentTarget.style.background = "rgba(255,255,255,0.07)";
+                      e.currentTarget.style.background = "color-mix(in srgb, var(--text) 7%, transparent)";
                       e.currentTarget.style.borderColor = pl.source === "spotify" ? "rgba(29,185,84,0.4)" : "rgba(255,0,0,0.4)";
                       e.currentTarget.style.boxShadow = "0 12px 30px rgba(0,0,0,0.4)";
                     }}
                     onMouseLeave={(e) => {
                       e.currentTarget.style.transform = "none";
-                      e.currentTarget.style.background = "rgba(255,255,255,0.03)";
-                      e.currentTarget.style.borderColor = "rgba(255,255,255,0.07)";
+                      e.currentTarget.style.background = "color-mix(in srgb, var(--text) 3%, transparent)";
+                      e.currentTarget.style.borderColor = "color-mix(in srgb, var(--text) 7%, transparent)";
                       e.currentTarget.style.boxShadow = "0 4px 20px rgba(0,0,0,0.2)";
                     }}
                   >
@@ -3301,7 +2785,7 @@ export default function ContentArea({
                       width: "100%", height: 120, borderRadius: 12,
                       backgroundImage: pl.thumbnail ? `url(${pl.thumbnail})` : "none",
                       backgroundSize: "cover", backgroundPosition: "center",
-                      background: !pl.thumbnail ? "linear-gradient(135deg, #8A2BE2, #00F0FF)" : undefined,
+                      background: !pl.thumbnail ? "var(--surface-2)" : undefined,
                       position: "relative", overflow: "hidden",
                     }}>
                       {/* Provider Badge */}
@@ -3310,7 +2794,7 @@ export default function ContentArea({
                         fontSize: 9, fontWeight: 900,
                         padding: "3px 8px", borderRadius: 6,
                         background: pl.source === "spotify" ? "rgba(29,185,84,0.9)" : "rgba(255,0,0,0.9)",
-                        color: "#fff", letterSpacing: "0.08em", textTransform: "uppercase",
+                        color: "var(--text)", letterSpacing: "0.08em", textTransform: "uppercase",
                       }}>
                         {pl.source === "spotify" ? "Spotify" : "YouTube"}
                       </span>
@@ -3320,7 +2804,7 @@ export default function ContentArea({
                           fontSize: 9, fontWeight: 800,
                           padding: "2px 7px", borderRadius: 5,
                           background: "rgba(0,0,0,0.75)",
-                          color: "#fff",
+                          color: "var(--text)",
                         }}>
                           {pl.track_count} tracks
                         </span>
@@ -3329,13 +2813,13 @@ export default function ContentArea({
 
                     <div>
                       <h4 style={{
-                        fontSize: 13.5, fontWeight: 800, color: "#fff",
+                        fontSize: 13.5, fontWeight: 800, color: "var(--text)",
                         margin: "0 0 4px 0",
                         display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden",
                       }}>
                         {pl.title}
                       </h4>
-                      <p style={{ fontSize: 11, color: "#9FA2B4", margin: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      <p style={{ fontSize: 11, color: "var(--text-2)", margin: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                         By {pl.uploader}
                       </p>
                     </div>
@@ -3351,10 +2835,10 @@ export default function ContentArea({
               {/* Category Filter Tabs */}
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16, flexWrap: "wrap", gap: 12 }}>
                 <div>
-                  <div style={{ fontSize: 9, fontWeight: 800, color: "#8A2BE2", letterSpacing: "0.14em", textTransform: "uppercase", marginBottom: 4 }}>
+                  <div style={{ fontSize: 9, fontWeight: 800, color: "var(--accent)", letterSpacing: "0.14em", textTransform: "uppercase", marginBottom: 4 }}>
                     Official Catalog
                   </div>
-                  <h4 style={{ fontSize: 16, fontWeight: 800, color: "#fff", margin: 0 }}>
+                  <h4 style={{ fontSize: 16, fontWeight: 800, color: "var(--text)", margin: 0 }}>
                     Top Curated Spotify & YouTube Playlists
                   </h4>
                 </div>
@@ -3362,15 +2846,11 @@ export default function ContentArea({
                 {/* Filter Pills */}
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                   {[
-                    { id: "all", label: "All (36)" },
-                    { id: "charts", label: "Charts (8)" },
-                    { id: "pop", label: "Pop (4)" },
-                    { id: "hiphop", label: "Hip-Hop (4)" },
-                    { id: "rock", label: "Rock (4)" },
-                    { id: "edm", label: "EDM (5)" },
-                    { id: "chill", label: "Chill & Lo-Fi (6)" },
-                    { id: "latin", label: "Latin (3)" },
-                    { id: "decades", label: "Decades (5)" },
+                    { id: "all", label: `All (${curated.catalog.length})` },
+                    ...Object.keys(CATEGORY_LABELS)
+                      .map((id) => ({ id, n: curated.catalog.filter((c) => c.category === id).length }))
+                      .filter((c) => c.n > 0)
+                      .map((c) => ({ id: c.id, label: `${CATEGORY_LABELS[c.id]} (${c.n})` })),
                   ].map((tab) => {
                     const isActive = playlistCategory === tab.id;
                     return (
@@ -3380,12 +2860,12 @@ export default function ContentArea({
                         onClick={() => setPlaylistCategory(tab.id)}
                         style={{
                           padding: "6px 12px", borderRadius: 10,
-                          background: isActive ? "#8A2BE2" : "rgba(255,255,255,0.04)",
-                          color: isActive ? "#fff" : "rgba(255,255,255,0.65)",
-                          border: `1px solid ${isActive ? "#8A2BE2" : "rgba(255,255,255,0.07)"}`,
+                          background: isActive ? "var(--accent)" : "color-mix(in srgb, var(--text) 4%, transparent)",
+                          color: isActive ? "var(--accent-fg)" : "color-mix(in srgb, var(--text) 65%, transparent)",
+                          border: `1px solid ${isActive ? "var(--accent)" : "color-mix(in srgb, var(--text) 7%, transparent)"}`,
                           fontSize: 11, fontWeight: 700,
                           cursor: "pointer", transition: "all 0.15s ease",
-                          boxShadow: isActive ? "0 2px 10px rgba(138,43,226,0.35)" : "none",
+                          boxShadow: isActive ? "0 2px 10px color-mix(in srgb, var(--accent) 35%, transparent)" : "none",
                         }}
                       >
                         {tab.label}
@@ -3395,9 +2875,11 @@ export default function ContentArea({
                 </div>
               </div>
 
+              {curatedLoading && <div style={{ color: "#9FA2B4", fontSize: 12 }}>Loading curated playlists…</div>}
+              {curatedError && <div style={{ color: "#f87171", fontSize: 12 }}>{curatedError}</div>}
               {/* Grid of Curated Playlists */}
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 18 }}>
-                {TOP_PLAYLISTS_CATALOG
+                {curated.catalog
                   .filter((p) => playlistCategory === "all" || p.category === playlistCategory)
                   .map((cur) => (
                     <div
@@ -3405,8 +2887,8 @@ export default function ContentArea({
                       onClick={() => { setDiscoverUrl(cur.url); handleLoadPlaylist(cur.url); }}
                       style={{
                         padding: "18px", borderRadius: 18,
-                        background: "rgba(255,255,255,0.03)",
-                        border: "1px solid rgba(255,255,255,0.06)",
+                        background: "color-mix(in srgb, var(--text) 3%, transparent)",
+                        border: "1px solid color-mix(in srgb, var(--text) 6%, transparent)",
                         cursor: "pointer",
                         transition: "all 0.25s ease",
                         display: "flex", flexDirection: "column", gap: 14,
@@ -3415,14 +2897,14 @@ export default function ContentArea({
                       }}
                       onMouseEnter={(e) => {
                         e.currentTarget.style.transform = "translateY(-4px)";
-                        e.currentTarget.style.background = "rgba(255,255,255,0.06)";
-                        e.currentTarget.style.borderColor = cur.provider === "spotify" ? "rgba(29,185,84,0.35)" : "rgba(255,0,0,0.35)";
+                        e.currentTarget.style.background = "color-mix(in srgb, var(--text) 6%, transparent)";
+                        e.currentTarget.style.borderColor = cur.provider === "spotify" ? "color-mix(in srgb, var(--accent) 30%, transparent)" : "rgba(255,0,0,0.35)";
                         e.currentTarget.style.boxShadow = "0 12px 30px rgba(0,0,0,0.3)";
                       }}
                       onMouseLeave={(e) => {
                         e.currentTarget.style.transform = "none";
-                        e.currentTarget.style.background = "rgba(255,255,255,0.03)";
-                        e.currentTarget.style.borderColor = "rgba(255,255,255,0.06)";
+                        e.currentTarget.style.background = "color-mix(in srgb, var(--text) 3%, transparent)";
+                        e.currentTarget.style.borderColor = "color-mix(in srgb, var(--text) 6%, transparent)";
                         e.currentTarget.style.boxShadow = "0 4px 20px rgba(0,0,0,0.15)";
                       }}
                     >
@@ -3432,7 +2914,7 @@ export default function ContentArea({
                         background: cur.gradient,
                         display: "flex", flexDirection: "column",
                         alignItems: "center", justifyContent: "center",
-                        color: "#fff", position: "relative",
+                        color: "var(--text)", position: "relative",
                         boxShadow: "inset 0 0 20px rgba(0,0,0,0.25)",
                       }}>
                         {/* Provider tag */}
@@ -3441,7 +2923,7 @@ export default function ContentArea({
                           fontSize: 9, fontWeight: 900,
                           padding: "2px 7px", borderRadius: 5,
                           background: cur.provider === "spotify" ? "rgba(29,185,84,0.9)" : "rgba(255,0,0,0.9)",
-                          color: "#fff", letterSpacing: "0.08em", textTransform: "uppercase",
+                          color: "var(--text)", letterSpacing: "0.08em", textTransform: "uppercase",
                         }}>
                           {cur.provider === "spotify" ? "Spotify" : "YouTube"}
                         </span>
@@ -3452,7 +2934,7 @@ export default function ContentArea({
                           fontSize: 9, fontWeight: 800,
                           padding: "2px 6px", borderRadius: 5,
                           background: "rgba(0,0,0,0.6)",
-                          color: "#fff",
+                          color: "var(--text)",
                         }}>
                           {cur.badge}
                         </span>
@@ -3463,11 +2945,11 @@ export default function ContentArea({
                       </div>
 
                       <div>
-                        <h4 style={{ fontSize: 14, fontWeight: 800, color: "#fff", marginBottom: 6, lineHeight: 1.25 }}>
+                        <h4 style={{ fontSize: 14, fontWeight: 800, color: "var(--text)", marginBottom: 6, lineHeight: 1.25 }}>
                           {cur.title}
                         </h4>
                         <p style={{
-                          fontSize: 11, color: "#9FA2B4", lineHeight: 1.4, margin: 0,
+                          fontSize: 11, color: "var(--text-2)", lineHeight: 1.4, margin: 0,
                           display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden",
                         }}>
                           {cur.desc}
@@ -3484,18 +2966,18 @@ export default function ContentArea({
             <div style={{
               padding: "60px 40px", textAlign: "center",
               display: "flex", flexDirection: "column", alignItems: "center", gap: 18,
-              border: "1px dashed rgba(255,255,255,0.07)", borderRadius: 20,
+              border: "1px dashed color-mix(in srgb, var(--text) 7%, transparent)", borderRadius: 20,
             }}>
               <div className="animate-spin-slow" style={{
                 width: 38, height: 38,
-                border: "3px solid #8A2BE2",
+                border: "3px solid var(--accent)",
                 borderTopColor: "transparent",
                 borderRadius: "50%",
-                boxShadow: "0 0 15px rgba(138, 43, 226, 0.3)",
+                boxShadow: "0 0 15px color-mix(in srgb, var(--accent) 30%, transparent)",
               }} />
               <div>
-                <p style={{ color: "#fff", fontSize: 13, fontWeight: 700, margin: "0 0 4px 0" }}>Fetching Playlist Information</p>
-                <p style={{ color: "#5A5D70", fontSize: 11, margin: 0 }}>Parsing tracks and metadata from playlist provider. This may take a moment...</p>
+                <p style={{ color: "var(--text)", fontSize: 13, fontWeight: 700, margin: "0 0 4px 0" }}>Fetching Playlist Information</p>
+                <p style={{ color: "var(--text-3)", fontSize: 11, margin: 0 }}>Parsing tracks and metadata from playlist provider. This may take a moment...</p>
               </div>
             </div>
           )}
@@ -3507,9 +2989,9 @@ export default function ContentArea({
               <div style={{
                 display: "flex", alignItems: "center", gap: 24,
                 padding: "24px", borderRadius: 20,
-                background: "rgba(20,20,32,0.5)",
-                backdropFilter: "blur(20px)",
-                border: "1px solid rgba(255,255,255,0.06)",
+                background: "color-mix(in srgb, var(--surface) 90%, transparent)",
+                
+                border: "1px solid color-mix(in srgb, var(--text) 6%, transparent)",
                 boxShadow: "0 8px 32px rgba(0,0,0,0.3)",
                 position: "relative",
               }} className="playlist-detail-banner">
@@ -3519,11 +3001,11 @@ export default function ContentArea({
                   flexShrink: 0,
                   backgroundImage: loadedPlaylist.thumbnail ? `url(${loadedPlaylist.thumbnail})` : "none",
                   backgroundSize: "cover", backgroundPosition: "center",
-                  background: !loadedPlaylist.thumbnail ? "linear-gradient(135deg, #8A2BE2, #EC4899)" : undefined,
-                  border: "1px solid rgba(255,255,255,0.08)",
+                  background: !loadedPlaylist.thumbnail ? "var(--surface-2)" : undefined,
+                  border: "1px solid color-mix(in srgb, var(--text) 8%, transparent)",
                   boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
                   display: "flex", alignItems: "center", justifyContent: "center",
-                  fontSize: loadedPlaylist.thumbnail ? 0 : 36, fontWeight: 900, color: "#fff",
+                  fontSize: loadedPlaylist.thumbnail ? 0 : 36, fontWeight: 900, color: "var(--text)",
                 }}>
                   {!loadedPlaylist.thumbnail && loadedPlaylist.title.charAt(0).toUpperCase()}
                 </div>
@@ -3540,19 +3022,19 @@ export default function ContentArea({
                     }}>
                       {(loadedPlaylist.source === "spotify" || loadedPlaylist.uploader === "Spotify") ? "Spotify" : "YouTube"}
                     </span>
-                    <span style={{ fontSize: 9, fontWeight: 800, color: "#9FA2B4", letterSpacing: "0.08em", textTransform: "uppercase" }}>
+                    <span style={{ fontSize: 9, fontWeight: 800, color: "var(--text-2)", letterSpacing: "0.08em", textTransform: "uppercase" }}>
                       Public Playlist
                     </span>
                   </div>
-                  <h3 style={{ fontSize: 20, fontWeight: 900, color: "#fff", margin: "4px 0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  <h3 style={{ fontSize: 20, fontWeight: 900, color: "var(--text)", margin: "4px 0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {loadedPlaylist.title}
                   </h3>
-                  <p style={{ fontSize: 11, color: "#9FA2B4", fontWeight: 500, margin: "0 0 12px 0" }}>
-                    Curator: <span style={{ color: "#fff", fontWeight: 700 }}>{loadedPlaylist.uploader}</span> · {loadedPlaylist.tracks.length} tracks
+                  <p style={{ fontSize: 11, color: "var(--text-2)", fontWeight: 500, margin: "0 0 12px 0" }}>
+                    Curator: <span style={{ color: "var(--text)", fontWeight: 700 }}>{loadedPlaylist.uploader}</span> · {loadedPlaylist.tracks.length} tracks
                   </p>
                   {loadedPlaylist.description && (
                     <p style={{
-                      fontSize: 10.5, color: "#5A5D70", lineHeight: 1.4, margin: "0 0 14px 0",
+                      fontSize: 10.5, color: "var(--text-3)", lineHeight: 1.4, margin: "0 0 14px 0",
                       display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden",
                     }}>
                       {loadedPlaylist.description}
@@ -3565,13 +3047,13 @@ export default function ContentArea({
                       onClick={() => setLoadedPlaylist(null)}
                       style={{
                         padding: "8px 16px", borderRadius: 10,
-                        background: "rgba(255,255,255,0.04)",
-                        border: "1px solid rgba(255,255,255,0.08)",
-                        color: "#9FA2B4", fontSize: 11, fontWeight: 700,
+                        background: "color-mix(in srgb, var(--text) 4%, transparent)",
+                        border: "1px solid color-mix(in srgb, var(--text) 8%, transparent)",
+                        color: "var(--text-2)", fontSize: 11, fontWeight: 700,
                         cursor: "pointer", transition: "all 0.15s ease",
                       }}
-                      onMouseEnter={(e) => e.currentTarget.style.color = "#fff"}
-                      onMouseLeave={(e) => e.currentTarget.style.color = "#9FA2B4"}
+                      onMouseEnter={(e) => e.currentTarget.style.color = "var(--text)"}
+                      onMouseLeave={(e) => e.currentTarget.style.color = "var(--text-2)"}
                     >
                       ← Back to Playlists
                     </button>
@@ -3579,9 +3061,9 @@ export default function ContentArea({
                       onClick={handlePlayAllTracks}
                       style={{
                         padding: "8px 18px", borderRadius: 10,
-                        background: "linear-gradient(135deg, #1DB954, #10b981)", color: "#fff",
+                        background: "var(--surface-2)", color: "var(--text)",
                         border: "none", fontSize: 11, fontWeight: 800,
-                        cursor: "pointer", boxShadow: "0 4px 16px rgba(29,185,84,0.35)",
+                        cursor: "pointer", boxShadow: "0 4px 16px color-mix(in srgb, var(--accent) 30%, transparent)",
                         transition: "all 0.15s ease",
                         display: "flex", alignItems: "center", gap: 6,
                       }}
@@ -3597,9 +3079,9 @@ export default function ContentArea({
                       onClick={handleImportPlaylist}
                       style={{
                         padding: "8px 18px", borderRadius: 10,
-                        background: "#8A2BE2", color: "#fff",
+                        background: "var(--accent)", color: "var(--accent-fg)",
                         border: "none", fontSize: 11, fontWeight: 800,
-                        cursor: "pointer", boxShadow: "0 4px 16px rgba(138,43,226,0.3)",
+                        cursor: "pointer", boxShadow: "0 4px 16px color-mix(in srgb, var(--accent) 30%, transparent)",
                         transition: "all 0.15s ease",
                         display: "flex", alignItems: "center", gap: 6,
                       }}
@@ -3618,7 +3100,7 @@ export default function ContentArea({
 
               {/* Track list */}
               <div>
-                <div style={{ fontSize: 9, fontWeight: 800, color: "#5A5D70", letterSpacing: "0.14em", textTransform: "uppercase", marginBottom: 12 }}>
+                <div style={{ fontSize: 9, fontWeight: 800, color: "var(--text-3)", letterSpacing: "0.14em", textTransform: "uppercase", marginBottom: 12 }}>
                   Playlist Songs
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
@@ -3634,31 +3116,31 @@ export default function ContentArea({
                           display: "flex", alignItems: "center", justifyContent: "space-between",
                           padding: "10px 14px", borderRadius: 14,
                           background: isPreviewPlaying
-                            ? "rgba(0,240,255,0.06)"
-                            : "rgba(255,255,255,0.02)",
-                          border: `1px solid ${isPreviewPlaying ? "rgba(0,240,255,0.2)" : "transparent"}`,
+                            ? "color-mix(in srgb, var(--accent) 6%, transparent)"
+                            : "color-mix(in srgb, var(--text) 2%, transparent)",
+                          border: `1px solid ${isPreviewPlaying ? "color-mix(in srgb, var(--accent) 20%, transparent)" : "transparent"}`,
                           transition: "all 0.15s ease",
                         }}
                         onMouseEnter={(e) => {
                           if (!isPreviewPlaying) {
-                            e.currentTarget.style.background = "rgba(255,255,255,0.04)";
+                            e.currentTarget.style.background = "color-mix(in srgb, var(--text) 4%, transparent)";
                           }
                         }}
                         onMouseLeave={(e) => {
                           if (!isPreviewPlaying) {
-                            e.currentTarget.style.background = "rgba(255,255,255,0.02)";
+                            e.currentTarget.style.background = "color-mix(in srgb, var(--text) 2%, transparent)";
                           }
                         }}
                       >
                         <div style={{ display: "flex", alignItems: "center", gap: 14, minWidth: 0, flex: 1 }}>
                           {/* Track number / Preview playing indicator */}
-                          <span style={{ width: 20, textAlign: "center", fontSize: 11, fontWeight: 700, color: "#5A5D70", flexShrink: 0 }}>
+                          <span style={{ width: 20, textAlign: "center", fontSize: 11, fontWeight: 700, color: "var(--text-3)", flexShrink: 0 }}>
                             {isPreviewPlaying ? (
                               <span style={{ display: "flex", alignItems: "flex-end", gap: "2px", height: 14, justifyContent: "center" }}>
                                 {[1, 2, 3].map((i) => (
                                   <span key={i} style={{
                                     display: "block", width: 3, borderRadius: 2,
-                                    background: "#00F0FF",
+                                    background: "var(--accent)",
                                     animation: `eq-bar ${0.5 + i * 0.15}s ease-in-out infinite`,
                                     height: `${4 + i * 3}px`,
                                   }} />
@@ -3672,10 +3154,10 @@ export default function ContentArea({
                           {/* Cover placeholder */}
                           <div style={{
                             width: 40, height: 40, borderRadius: 10, flexShrink: 0,
-                            background: "linear-gradient(135deg, rgba(255,255,255,0.03), rgba(255,255,255,0.08))",
-                            border: "1px solid rgba(255,255,255,0.06)",
+                            background: "var(--surface-2)",
+                            border: "1px solid color-mix(in srgb, var(--text) 6%, transparent)",
                             display: "flex", alignItems: "center", justifyContent: "center",
-                            fontSize: 14, fontWeight: 900, color: "#5A5D70",
+                            fontSize: 14, fontWeight: 900, color: "var(--text-3)",
                           }}>
                             {track.title.charAt(0).toUpperCase()}
                           </div>
@@ -3684,13 +3166,13 @@ export default function ContentArea({
                           <div style={{ minWidth: 0 }}>
                             <div style={{
                               fontSize: 13, fontWeight: 700,
-                              color: isPreviewPlaying ? "#00F0FF" : "#fff",
+                              color: isPreviewPlaying ? "var(--accent)" : "var(--text)",
                               overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
                               marginBottom: 2,
                             }}>
                               {track.title}
                             </div>
-                            <div style={{ fontSize: 11, color: "#9FA2B4", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            <div style={{ fontSize: 11, color: "var(--text-2)", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                               {track.artist}
                             </div>
                           </div>
@@ -3698,7 +3180,7 @@ export default function ContentArea({
 
                         {/* Right side: Duration + Action buttons */}
                         <div style={{ display: "flex", alignItems: "center", gap: 24, flexShrink: 0, paddingLeft: 16 }}>
-                          <span style={{ fontSize: 11, color: "#5A5D70", fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>
+                          <span style={{ fontSize: 11, color: "var(--text-3)", fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>
                             {formatDuration(track.duration)}
                           </span>
                           
@@ -3709,9 +3191,9 @@ export default function ContentArea({
                               disabled={isTrackPreviewLoading}
                               style={{
                                 width: 28, height: 28, borderRadius: "50%",
-                                background: isPreviewPlaying ? "rgba(0,240,255,0.15)" : "rgba(255,255,255,0.05)",
-                                border: `1px solid ${isPreviewPlaying ? "rgba(0,240,255,0.3)" : "rgba(255,255,255,0.08)"}`,
-                                color: isPreviewPlaying ? "#00F0FF" : "#fff",
+                                background: isPreviewPlaying ? "color-mix(in srgb, var(--accent) 15%, transparent)" : "color-mix(in srgb, var(--text) 5%, transparent)",
+                                border: `1px solid ${isPreviewPlaying ? "color-mix(in srgb, var(--accent) 30%, transparent)" : "color-mix(in srgb, var(--text) 8%, transparent)"}`,
+                                color: isPreviewPlaying ? "var(--accent)" : "var(--text)",
                                 display: "flex", alignItems: "center", justifyContent: "center",
                                 cursor: isTrackPreviewLoading ? "not-allowed" : "pointer",
                                 transition: "all 0.15s ease",
@@ -3719,7 +3201,7 @@ export default function ContentArea({
                               title="Preview Song"
                             >
                               {isTrackPreviewLoading ? (
-                                <div className="animate-spin-slow" style={{ width: 10, height: 10, border: "1.5px solid #00F0FF", borderTopColor: "transparent", borderRadius: "50%" }} />
+                                <div className="animate-spin-slow" style={{ width: 10, height: 10, border: "1.5px solid var(--accent)", borderTopColor: "transparent", borderRadius: "50%" }} />
                               ) : isPreviewPlaying ? (
                                 <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
                                   <rect x="6" y="4" width="4" height="16" rx="1" />
@@ -3741,26 +3223,26 @@ export default function ContentArea({
                                 background: downloadState.status === "success"
                                   ? "rgba(29,185,84,0.15)"
                                   : downloadState.status === "loading"
-                                  ? "rgba(138,43,226,0.15)"
+                                  ? "color-mix(in srgb, var(--accent) 15%, transparent)"
                                   : downloadState.status === "error"
                                   ? "rgba(239,68,68,0.15)"
-                                  : "rgba(255,255,255,0.05)",
+                                  : "color-mix(in srgb, var(--text) 5%, transparent)",
                                 border: `1px solid ${
                                   downloadState.status === "success"
-                                    ? "rgba(29,185,84,0.3)"
+                                    ? "color-mix(in srgb, var(--accent) 30%, transparent)"
                                     : downloadState.status === "loading"
-                                    ? "rgba(138,43,226,0.3)"
+                                    ? "color-mix(in srgb, var(--accent) 30%, transparent)"
                                     : downloadState.status === "error"
                                     ? "rgba(239,68,68,0.3)"
-                                    : "rgba(255,255,255,0.08)"
+                                    : "color-mix(in srgb, var(--text) 8%, transparent)"
                                 }`,
                                 color: downloadState.status === "success"
                                   ? "#1DB954"
                                   : downloadState.status === "loading"
-                                  ? "#8A2BE2"
+                                  ? "var(--accent)"
                                   : downloadState.status === "error"
                                   ? "#EF4444"
-                                  : "#9FA2B4",
+                                  : "var(--text-2)",
                                 display: "flex", alignItems: "center", justifyContent: "center",
                                 cursor: downloadState.status === "loading" || downloadState.status === "success" ? "not-allowed" : "pointer",
                                 transition: "all 0.15s ease",
@@ -3769,14 +3251,14 @@ export default function ContentArea({
                                 downloadState.status === "success"
                                   ? "Downloaded"
                                   : downloadState.status === "loading"
-                                  ? "Downloading..."
+                                  ? (dlPercent[track.id] != null ? `Downloading ${Math.round(dlPercent[track.id])}%` : "Queued / downloading...")
                                   : downloadState.status === "error"
                                   ? `Failed: ${downloadState.error}`
                                   : "Download Track"
                               }
                             >
                               {downloadState.status === "loading" ? (
-                                <div className="animate-spin-slow" style={{ width: 10, height: 10, border: "1.5px solid #8A2BE2", borderTopColor: "transparent", borderRadius: "50%" }} />
+                                <div className="animate-spin-slow" style={{ width: 10, height: 10, border: "1.5px solid var(--accent)", borderTopColor: "transparent", borderRadius: "50%" }} />
                               ) : downloadState.status === "success" ? (
                                 <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.5">
                                   <polyline points="20 6 9 17 4 12" />
@@ -3807,16 +3289,16 @@ export default function ContentArea({
       {activePlaylist && (showAddSongsPanel || displayedTracks.length === 0) && (
         <div style={{
           padding: "24px", borderRadius: 18, marginBottom: 24,
-          background: "rgba(20,20,32,0.65)",
-          border: "1px solid rgba(255,255,255,0.1)",
+          background: "color-mix(in srgb, var(--surface) 90%, transparent)",
+          border: "1px solid color-mix(in srgb, var(--text) 10%, transparent)",
           boxShadow: "0 8px 32px rgba(0,0,0,0.35)",
         }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16, flexWrap: "wrap", gap: 10 }}>
             <div>
-              <h3 style={{ fontSize: 16, fontWeight: 800, color: "#fff", margin: 0, display: "flex", alignItems: "center", gap: 8 }}>
-                <span style={{ color: "#8A2BE2" }}>+</span> Add Songs to {activePlaylist.name}
+              <h3 style={{ fontSize: 16, fontWeight: 800, color: "var(--text)", margin: 0, display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ color: "var(--accent)" }}>+</span> Add Songs to {activePlaylist.name}
               </h3>
-              <p style={{ fontSize: 12, color: "#9FA2B4", margin: "4px 0 0 0" }}>
+              <p style={{ fontSize: 12, color: "var(--text-2)", margin: "4px 0 0 0" }}>
                 Search for songs, import from playlist URL, or auto-populate tracks.
               </p>
             </div>
@@ -3827,16 +3309,16 @@ export default function ContentArea({
                   disabled={isAutoPopulating}
                   style={{
                     padding: "7px 14px", borderRadius: 10,
-                    background: "rgba(0,240,255,0.15)",
-                    border: "1px solid rgba(0,240,255,0.3)",
-                    color: "#00F0FF", fontSize: 11, fontWeight: 700,
+                    background: "color-mix(in srgb, var(--accent) 15%, transparent)",
+                    border: "1px solid color-mix(in srgb, var(--accent) 30%, transparent)",
+                    color: "var(--accent)", fontSize: 11, fontWeight: 700,
                     cursor: isAutoPopulating ? "not-allowed" : "pointer",
                     display: "flex", alignItems: "center", gap: 6,
                   }}
                 >
                   {isAutoPopulating ? (
                     <>
-                      <div style={{ width: 12, height: 12, border: "2px solid #00F0FF", borderTopColor: "transparent", borderRadius: "50%", animation: "spin-slow 1s linear infinite" }} />
+                      <div style={{ width: 12, height: 12, border: "2px solid var(--accent)", borderTopColor: "transparent", borderRadius: "50%", animation: "spin-slow 1s linear infinite" }} />
                       Populating...
                     </>
                   ) : (
@@ -3853,7 +3335,7 @@ export default function ContentArea({
                 <button
                   onClick={() => setShowAddSongsPanel(false)}
                   style={{
-                    background: "rgba(255,255,255,0.06)", border: "none", color: "#9FA2B4",
+                    background: "color-mix(in srgb, var(--text) 6%, transparent)", border: "none", color: "var(--text-2)",
                     padding: "6px 12px", borderRadius: 8, fontSize: 11, fontWeight: 600, cursor: "pointer",
                   }}
                 >
@@ -3877,12 +3359,12 @@ export default function ContentArea({
                 style={{
                   width: "100%", padding: "10px 14px 10px 38px",
                   borderRadius: 12,
-                  background: "rgba(255,255,255,0.04)",
-                  border: "1px solid rgba(255,255,255,0.08)",
-                  color: "#fff", fontSize: 12, outline: "none", boxSizing: "border-box",
+                  background: "color-mix(in srgb, var(--text) 4%, transparent)",
+                  border: "1px solid color-mix(in srgb, var(--text) 8%, transparent)",
+                  color: "var(--text)", fontSize: 12, outline: "none", boxSizing: "border-box",
                 }}
               />
-              <svg style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", color: "#5A5D70" }} width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+              <svg style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", color: "var(--text-3)" }} width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                 <circle cx="11" cy="11" r="8" />
                 <line x1="21" y1="21" x2="16.65" y2="16.65" />
               </svg>
@@ -3892,7 +3374,7 @@ export default function ContentArea({
               disabled={isSearchingPlaylist || !playlistSearchQuery.trim()}
               style={{
                 padding: "0 18px", borderRadius: 12,
-                background: "#8A2BE2", color: "#fff",
+                background: "var(--accent)", color: "var(--accent-fg)",
                 border: "none", fontSize: 12, fontWeight: 700,
                 cursor: isSearchingPlaylist ? "not-allowed" : "pointer",
                 display: "flex", alignItems: "center", gap: 6,
@@ -3905,8 +3387,8 @@ export default function ContentArea({
           {/* URL Import row */}
           <div style={{
             display: "flex", gap: 10, padding: 10, borderRadius: 12,
-            background: "rgba(255,255,255,0.02)",
-            border: "1px dashed rgba(255,255,255,0.08)",
+            background: "color-mix(in srgb, var(--text) 2%, transparent)",
+            border: "1px dashed color-mix(in srgb, var(--text) 8%, transparent)",
             marginBottom: playlistSearchResults.length > 0 ? 14 : 0,
           }}>
             <input
@@ -3916,9 +3398,9 @@ export default function ContentArea({
               onChange={(e) => setPlaylistUrlInput(e.target.value)}
               style={{
                 flex: 1, padding: "8px 12px", borderRadius: 8,
-                background: "rgba(255,255,255,0.03)",
-                border: "1px solid rgba(255,255,255,0.06)",
-                color: "#fff", fontSize: 11, outline: "none",
+                background: "color-mix(in srgb, var(--text) 3%, transparent)",
+                border: "1px solid color-mix(in srgb, var(--text) 6%, transparent)",
+                color: "var(--text)", fontSize: 11, outline: "none",
               }}
             />
             <button
@@ -3926,7 +3408,7 @@ export default function ContentArea({
               disabled={isImportingUrl || !playlistUrlInput.trim()}
               style={{
                 padding: "8px 14px", borderRadius: 8,
-                background: "#1DB954", color: "#fff", border: "none",
+                background: "#1DB954", color: "var(--text)", border: "none",
                 fontSize: 11, fontWeight: 800, cursor: isImportingUrl ? "not-allowed" : "pointer",
               }}
             >
@@ -3941,7 +3423,7 @@ export default function ContentArea({
           {/* Search results */}
           {playlistSearchResults.length > 0 && (
             <div style={{ marginTop: 14 }}>
-              <div style={{ fontSize: 10, fontWeight: 800, color: "#9FA2B4", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8 }}>
+              <div style={{ fontSize: 10, fontWeight: 800, color: "var(--text-2)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8 }}>
                 Matching Tracks ({playlistSearchResults.length})
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 240, overflowY: "auto" }}>
@@ -3953,23 +3435,23 @@ export default function ContentArea({
                       style={{
                         display: "flex", alignItems: "center", justifyContent: "space-between",
                         padding: "8px 12px", borderRadius: 10,
-                        background: "rgba(255,255,255,0.03)",
-                        border: "1px solid rgba(255,255,255,0.06)",
+                        background: "color-mix(in srgb, var(--text) 3%, transparent)",
+                        border: "1px solid color-mix(in srgb, var(--text) 6%, transparent)",
                       }}
                     >
                       <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0, flex: 1 }}>
                         {t.thumbnail ? (
-                          <img src={t.thumbnail} alt="" style={{ width: 34, height: 34, borderRadius: 6, objectFit: "cover" }} />
+                          <img src={t.thumbnail} alt="" loading="lazy" decoding="async" style={{ width: 34, height: 34, borderRadius: 6, objectFit: "cover" }} />
                         ) : (
-                          <div style={{ width: 34, height: 34, borderRadius: 6, background: "rgba(255,255,255,0.06)", display: "flex", alignItems: "center", justifyContent: "center", color: "#8A2BE2", fontWeight: 700 }}>
+                          <div style={{ width: 34, height: 34, borderRadius: 6, background: "color-mix(in srgb, var(--text) 6%, transparent)", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--accent)", fontWeight: 700 }}>
                             {t.title.charAt(0)}
                           </div>
                         )}
                         <div style={{ minWidth: 0 }}>
-                          <div style={{ fontSize: 12, fontWeight: 700, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                             {t.title}
                           </div>
-                          <div style={{ fontSize: 10, color: "#9FA2B4", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          <div style={{ fontSize: 10, color: "var(--text-2)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                             {t.artist}
                           </div>
                         </div>
@@ -3979,9 +3461,9 @@ export default function ContentArea({
                           onClick={() => handlePlaylistTrackPreview(t)}
                           style={{
                             padding: "5px 10px", borderRadius: 6,
-                            background: "rgba(0,240,255,0.1)",
-                            border: "1px solid rgba(0,240,255,0.25)",
-                            color: "#00F0FF", fontSize: 10, fontWeight: 700, cursor: "pointer",
+                            background: "color-mix(in srgb, var(--accent) 10%, transparent)",
+                            border: "1px solid color-mix(in srgb, var(--accent) 25%, transparent)",
+                            color: "var(--accent)", fontSize: 10, fontWeight: 700, cursor: "pointer",
                           }}
                         >
                           ▶ Stream
@@ -3991,9 +3473,9 @@ export default function ContentArea({
                           disabled={isAdded}
                           style={{
                             padding: "5px 12px", borderRadius: 6,
-                            background: isAdded ? "rgba(29,185,84,0.25)" : "#8A2BE2",
+                            background: isAdded ? "rgba(29,185,84,0.25)" : "var(--accent)",
                             border: `1px solid ${isAdded ? "rgba(29,185,84,0.5)" : "transparent"}`,
-                            color: isAdded ? "#1DB954" : "#fff",
+                            color: isAdded ? "#1DB954" : "var(--accent-fg)",
                             fontSize: 10, fontWeight: 700, cursor: isAdded ? "default" : "pointer",
                           }}
                         >
@@ -4021,22 +3503,22 @@ export default function ContentArea({
       {/* Tracks Table */}
       {activeView !== "downloads" && activeView !== "discover" && (!isUrlQuery(searchQuery) || displayedTracks.length > 0) && (
         <div>
-          <div style={{ fontSize: 9, fontWeight: 800, color: "#5A5D70", letterSpacing: "0.14em", textTransform: "uppercase", marginBottom: 12 }}>
+          <div style={{ fontSize: 9, fontWeight: 800, color: "var(--text-3)", letterSpacing: "0.14em", textTransform: "uppercase", marginBottom: 12 }}>
             Songs {displayedTracks.length > 0 ? `(${displayedTracks.length})` : ""}
           </div>
           {displayedTracks.length === 0 ? (
             <div style={{
               padding: "40px", textAlign: "center",
-              border: "1px dashed rgba(255,255,255,0.07)", borderRadius: 16,
+              border: "1px dashed color-mix(in srgb, var(--text) 7%, transparent)", borderRadius: 16,
             }}>
-              <p style={{ color: "#9FA2B4", fontSize: 14, fontWeight: 700, marginBottom: 4 }}>
+              <p style={{ color: "var(--text-2)", fontSize: 14, fontWeight: 700, marginBottom: 4 }}>
                 {activePlaylist
                   ? `"${activePlaylist.name}" is empty`
                   : searchQuery.trim()
                   ? `No library songs match "${searchQuery.trim()}"`
                   : "No tracks found in this library view"}
               </p>
-              <p style={{ color: "#5A5D70", fontSize: 12, margin: 0 }}>
+              <p style={{ color: "var(--text-3)", fontSize: 12, margin: 0 }}>
                 {activePlaylist
                   ? "Use the search & import panel above to add songs, or click Auto-fill to load 15 tracks."
                   : searchQuery.trim()
@@ -4052,10 +3534,10 @@ export default function ContentArea({
                   }}
                   style={{
                     marginTop: 14, padding: "9px 20px", borderRadius: 12,
-                    background: "#8A2BE2", color: "#fff", border: "none",
+                    background: "var(--accent)", color: "var(--accent-fg)", border: "none",
                     fontSize: 12, fontWeight: 800, cursor: "pointer",
                     display: "inline-flex", alignItems: "center", gap: 7,
-                    boxShadow: "0 4px 16px rgba(138,43,226,0.35)",
+                    boxShadow: "0 4px 16px color-mix(in srgb, var(--accent) 35%, transparent)",
                   }}
                 >
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
@@ -4081,22 +3563,22 @@ export default function ContentArea({
                       display: "flex", alignItems: "center", justifyContent: "space-between",
                       padding: "10px 14px", borderRadius: 14,
                       background: isCurrent
-                        ? "rgba(138,43,226,0.12)"
-                        : isHovered ? "rgba(255,255,255,0.05)" : "transparent",
-                      border: `1px solid ${isCurrent ? "rgba(138,43,226,0.3)" : "transparent"}`,
+                        ? "color-mix(in srgb, var(--accent) 12%, transparent)"
+                        : isHovered ? "color-mix(in srgb, var(--text) 5%, transparent)" : "transparent",
+                      border: `1px solid ${isCurrent ? "color-mix(in srgb, var(--accent) 30%, transparent)" : "transparent"}`,
                       cursor: "pointer",
                       transition: "all 0.15s ease",
                     }}
                   >
                     <div style={{ display: "flex", alignItems: "center", gap: 14, minWidth: 0, flex: 1 }}>
                       {/* Track number / EQ indicator */}
-                      <span style={{ width: 20, textAlign: "center", fontSize: 11, fontWeight: 700, color: "#5A5D70", flexShrink: 0 }}>
+                      <span style={{ width: 20, textAlign: "center", fontSize: 11, fontWeight: 700, color: "var(--text-3)", flexShrink: 0 }}>
                         {isCurrent && isPlaying ? (
                           <span style={{ display: "flex", alignItems: "flex-end", gap: "2px", height: 14, justifyContent: "center" }}>
                             {[1, 2, 3].map((i) => (
                               <span key={i} style={{
                                 display: "block", width: 3, borderRadius: 2,
-                                background: "#8A2BE2",
+                                background: "var(--accent)",
                                 animation: `eq-bar ${0.5 + i * 0.15}s ease-in-out infinite`,
                                 height: `${4 + i * 3}px`,
                               }} />
@@ -4112,28 +3594,28 @@ export default function ContentArea({
                         width: 40, height: 40, borderRadius: 10, flexShrink: 0,
                         backgroundImage: `url(${track.cover})`,
                         backgroundSize: "cover", backgroundPosition: "center",
-                        border: "1px solid rgba(255,255,255,0.06)",
-                        boxShadow: isCurrent ? "0 0 12px rgba(138,43,226,0.3)" : "none",
+                        border: "1px solid color-mix(in srgb, var(--text) 6%, transparent)",
+                        boxShadow: isCurrent ? "0 0 12px color-mix(in srgb, var(--accent) 30%, transparent)" : "none",
                       }} />
 
                       {/* Title & Artist */}
                       <div style={{ minWidth: 0 }}>
                         <div style={{
                           fontSize: 13, fontWeight: 700,
-                          color: isCurrent ? "#8A2BE2" : "#fff",
+                          color: isCurrent ? "var(--accent)" : "var(--text)",
                           overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
                           marginBottom: 2,
                         }}>
                           {track.title}
                         </div>
-                        <div style={{ fontSize: 11, color: "#9FA2B4", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        <div style={{ fontSize: 11, color: "var(--text-2)", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                           {track.artist}
                         </div>
                       </div>
                     </div>
 
                     <div style={{ display: "flex", alignItems: "center", gap: 14, flexShrink: 0, paddingLeft: 16 }}>
-                      <span style={{ fontSize: 11, color: "#5A5D70", fontWeight: 500, display: "none" }} className="track-album">
+                      <span style={{ fontSize: 11, color: "var(--text-3)", fontWeight: 500, display: "none" }} className="track-album">
                         {track.album}
                       </span>
                       {/* Provider badge */}
@@ -4152,7 +3634,7 @@ export default function ContentArea({
                               ? "rgba(255, 0, 0, 0.15)"
                               : track.source === "soundcloud"
                               ? "rgba(255, 85, 0, 0.15)"
-                              : "rgba(138, 43, 226, 0.15)",
+                              : "color-mix(in srgb, var(--accent) 15%, transparent)",
                           color:
                             track.source === "spotify"
                               ? "#1DB954"
@@ -4160,15 +3642,15 @@ export default function ContentArea({
                               ? "#FF4444"
                               : track.source === "soundcloud"
                               ? "#FF5500"
-                              : "#8A2BE2",
+                              : "var(--accent)",
                           border: `1px solid ${
                             track.source === "spotify"
-                              ? "rgba(29, 185, 84, 0.3)"
+                              ? "color-mix(in srgb, var(--accent) 30%, transparent)"
                               : track.source === "youtube"
                               ? "rgba(255, 0, 0, 0.3)"
                               : track.source === "soundcloud"
                               ? "rgba(255, 85, 0, 0.3)"
-                              : "rgba(138, 43, 226, 0.3)"
+                              : "color-mix(in srgb, var(--accent) 30%, transparent)"
                           }`,
                         }}
                       >
@@ -4183,15 +3665,15 @@ export default function ContentArea({
                           fontWeight: 700,
                           padding: "2px 6px",
                           borderRadius: 4,
-                          background: "rgba(0, 240, 255, 0.1)",
-                          color: "#00F0FF",
-                          border: "1px solid rgba(0, 240, 255, 0.2)",
+                          background: "color-mix(in srgb, var(--accent) 10%, transparent)",
+                          color: "var(--accent)",
+                          border: "1px solid color-mix(in srgb, var(--accent) 20%, transparent)",
                         }}
                       >
                         Synced Lyrics
                       </span>
 
-                      <span style={{ fontSize: 11, color: "#5A5D70", fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>
+                      <span style={{ fontSize: 11, color: "var(--text-3)", fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>
                         {formatDuration(track.duration)}
                       </span>
                     </div>
@@ -4208,16 +3690,16 @@ export default function ContentArea({
         <div style={{
           position: "fixed", inset: 0, zIndex: 50,
           background: "rgba(0,0,0,0.65)",
-          backdropFilter: "blur(12px)",
+          
           display: "flex", alignItems: "center", justifyContent: "center",
           padding: 16,
           animation: "fade-in 0.2s ease-out",
         }}>
           <div style={{
             width: "100%", maxWidth: 440,
-            background: "rgba(13,13,20,0.95)",
-            backdropFilter: "blur(30px)",
-            border: "1px solid rgba(255,255,255,0.1)",
+            background: "color-mix(in srgb, var(--surface) 100%, transparent)",
+            
+            border: "1px solid color-mix(in srgb, var(--text) 10%, transparent)",
             borderRadius: 22,
             padding: 28,
             boxShadow: "0 24px 60px rgba(0,0,0,0.7)",
@@ -4228,9 +3710,9 @@ export default function ContentArea({
               style={{
                 position: "absolute", top: 16, right: 16,
                 padding: 8, borderRadius: 10,
-                background: "rgba(255,255,255,0.05)",
-                border: "1px solid rgba(255,255,255,0.08)",
-                color: "#9FA2B4", cursor: "pointer",
+                background: "color-mix(in srgb, var(--text) 5%, transparent)",
+                border: "1px solid color-mix(in srgb, var(--text) 8%, transparent)",
+                color: "var(--text-2)", cursor: "pointer",
                 display: "flex", alignItems: "center", justifyContent: "center",
               }}
             >
@@ -4240,11 +3722,11 @@ export default function ContentArea({
               </svg>
             </button>
 
-            <h3 style={{ fontSize: 18, fontWeight: 900, color: "#fff", marginBottom: 22 }}>Create Playlist</h3>
+            <h3 style={{ fontSize: 18, fontWeight: 900, color: "var(--text)", marginBottom: 22 }}>Create Playlist</h3>
 
             <form onSubmit={handleCreatePlaylist} style={{ display: "flex", flexDirection: "column", gap: 18 }}>
               <div>
-                <label style={{ fontSize: 9, fontWeight: 800, color: "#5A5D70", letterSpacing: "0.14em", textTransform: "uppercase", display: "block", marginBottom: 7 }}>
+                <label style={{ fontSize: 9, fontWeight: 800, color: "var(--text-3)", letterSpacing: "0.14em", textTransform: "uppercase", display: "block", marginBottom: 7 }}>
                   Name
                 </label>
                 <input
@@ -4256,16 +3738,16 @@ export default function ContentArea({
                   style={{
                     width: "100%", padding: "11px 14px",
                     borderRadius: 11,
-                    background: "rgba(255,255,255,0.04)",
-                    border: "1px solid rgba(255,255,255,0.08)",
-                    color: "#fff", fontSize: 13, fontWeight: 500,
+                    background: "color-mix(in srgb, var(--text) 4%, transparent)",
+                    border: "1px solid color-mix(in srgb, var(--text) 8%, transparent)",
+                    color: "var(--text)", fontSize: 13, fontWeight: 500,
                     outline: "none", boxSizing: "border-box",
                   }}
                 />
               </div>
 
               <div>
-                <label style={{ fontSize: 9, fontWeight: 800, color: "#5A5D70", letterSpacing: "0.14em", textTransform: "uppercase", display: "block", marginBottom: 7 }}>
+                <label style={{ fontSize: 9, fontWeight: 800, color: "var(--text-3)", letterSpacing: "0.14em", textTransform: "uppercase", display: "block", marginBottom: 7 }}>
                   Platform
                 </label>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
@@ -4279,9 +3761,9 @@ export default function ContentArea({
                         onClick={() => setNewPlSource(src)}
                         style={{
                           padding: "11px", borderRadius: 11,
-                          border: `1px solid ${isSelected ? color : "rgba(255,255,255,0.08)"}`,
-                          background: isSelected ? `${color}1a` : "rgba(255,255,255,0.03)",
-                          color: isSelected ? color : "#9FA2B4",
+                          border: `1px solid ${isSelected ? color : "color-mix(in srgb, var(--text) 8%, transparent)"}`,
+                          background: isSelected ? `${color}1a` : "color-mix(in srgb, var(--text) 3%, transparent)",
+                          color: isSelected ? color : "var(--text-2)",
                           fontSize: 11, fontWeight: 800, cursor: "pointer",
                           letterSpacing: "0.08em", textTransform: "uppercase",
                           boxShadow: isSelected ? `0 0 14px ${color}25` : "none",
@@ -4296,14 +3778,14 @@ export default function ContentArea({
               </div>
 
               <div>
-                <label style={{ fontSize: 9, fontWeight: 800, color: "#5A5D70", letterSpacing: "0.14em", textTransform: "uppercase", display: "block", marginBottom: 7 }}>
+                <label style={{ fontSize: 9, fontWeight: 800, color: "var(--text-3)", letterSpacing: "0.14em", textTransform: "uppercase", display: "block", marginBottom: 7 }}>
                   Tracks ({selectedTrackIds.length} selected)
                 </label>
                 <div style={{
                   maxHeight: 160, overflowY: "auto",
-                  border: "1px solid rgba(255,255,255,0.06)",
+                  border: "1px solid color-mix(in srgb, var(--text) 6%, transparent)",
                   borderRadius: 11, padding: 8,
-                  background: "rgba(255,255,255,0.02)",
+                  background: "color-mix(in srgb, var(--text) 2%, transparent)",
                   display: "flex", flexDirection: "column", gap: 3,
                 }}>
                   {tracks.map((t) => {
@@ -4315,9 +3797,9 @@ export default function ContentArea({
                         style={{
                           display: "flex", alignItems: "center", justifyContent: "space-between",
                           padding: "7px 10px", borderRadius: 8,
-                          background: sel ? "rgba(138,43,226,0.18)" : "transparent",
+                          background: sel ? "color-mix(in srgb, var(--accent) 18%, transparent)" : "transparent",
                           cursor: "pointer", fontSize: 12, fontWeight: 600,
-                          color: sel ? "#fff" : "#9FA2B4",
+                          color: sel ? "var(--text)" : "var(--text-2)",
                           transition: "all 0.12s ease",
                         }}
                       >
@@ -4326,12 +3808,12 @@ export default function ContentArea({
                         </span>
                         <div style={{
                           width: 16, height: 16, borderRadius: 5, flexShrink: 0, marginLeft: 8,
-                          border: `1.5px solid ${sel ? "#8A2BE2" : "rgba(255,255,255,0.15)"}`,
-                          background: sel ? "#8A2BE2" : "transparent",
+                          border: `1.5px solid ${sel ? "var(--accent)" : "color-mix(in srgb, var(--text) 15%, transparent)"}`,
+                          background: sel ? "var(--accent)" : "transparent",
                           display: "flex", alignItems: "center", justifyContent: "center",
                         }}>
                           {sel && (
-                            <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3.5">
+                            <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="var(--accent-fg)" strokeWidth="3.5">
                               <polyline points="20 6 9 17 4 12" />
                             </svg>
                           )}
@@ -4347,11 +3829,11 @@ export default function ContentArea({
                 disabled={!newPlName.trim()}
                 style={{
                   padding: "13px", borderRadius: 12,
-                  background: "#8A2BE2", color: "#fff",
+                  background: "var(--accent)", color: "var(--accent-fg)",
                   border: "none", fontSize: 12, fontWeight: 800,
                   cursor: "pointer", letterSpacing: "0.06em",
                   textTransform: "uppercase",
-                  boxShadow: "0 4px 20px rgba(138,43,226,0.4)",
+                  boxShadow: "0 4px 20px color-mix(in srgb, var(--accent) 40%, transparent)",
                   opacity: newPlName.trim() ? 1 : 0.4,
                   pointerEvents: newPlName.trim() ? "auto" : "none",
                   transition: "all 0.15s ease",
@@ -4367,3 +3849,5 @@ export default function ContentArea({
     </div>
   );
 }
+
+export default memo(ContentArea);
